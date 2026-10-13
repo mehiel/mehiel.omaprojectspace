@@ -499,6 +499,21 @@ cmd_uninstall() {
   hyprctl reload >/dev/null 2>&1 || true
 }
 
+# This session's copy of a process: with a nested session (the demo) or a
+# second login running, the first match by name may belong to another one.
+session_pid() {
+  local pid sig=${HYPRLAND_INSTANCE_SIGNATURE:-}
+  for pid in $(pgrep -x "$1"); do
+    if [[ -z $sig ]] || tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HYPRLAND_INSTANCE_SIGNATURE=$sig"; then
+      echo "$pid"
+      return
+    fi
+  done
+  # Hyprland's own env predates its signature; match it by instance instead.
+  [[ $1 == Hyprland ]] && hyprctl instances -j 2>/dev/null | jq -r --arg s "$sig" '.[] | select(.instance == $s) | .pid' | head -1
+  return 0
+}
+
 cmd_doctor() {
   local bad=0
   local green="" yellow="" reset=""
@@ -517,7 +532,7 @@ cmd_doctor() {
   echo "Session"
   local proc pid path resolved
   for proc in Hyprland quickshell; do
-    pid=$(pgrep -x "$proc" | head -1 || true)
+    pid=$(session_pid "$proc")
     if [[ -z $pid ]]; then warn "$proc is not running"; continue; fi
     path=$(tr '\0' '\n' <"/proc/$pid/environ" | sed -n 's/^PATH=//p')
     resolved=$(PATH=$path command -v uwsm-app || true)
