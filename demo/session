@@ -35,6 +35,14 @@ stop)
     hyprctl dispatch 'hl.dsp.exit()' >/dev/null 2>&1 || true
     rm -f "$STATE"
   fi
+  # Whatever the demo started and outlived it (the shell's plugin watchers,
+  # Chrome helpers) still runs with the demo home: reap it by that.
+  sleep 1
+  for pid in $(pgrep -u "$(id -u)"); do
+    if tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HOME=$DEMO"; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
   if [[ -f $DEMO/.intranet.pid ]]; then
     kill "$(cat "$DEMO/.intranet.pid")" 2>/dev/null || true
     rm -f "$DEMO/.intranet.pid"
