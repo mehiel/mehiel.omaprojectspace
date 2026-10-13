@@ -1,0 +1,12 @@
+#!/bin/bash
+# Builds demo/.build/vpointer from vpointer.c and the bundled protocol XML.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+out=$here/.build
+mkdir -p "$out"
+xml=$here/protocols/wlr-virtual-pointer-unstable-v1.xml
+wayland-scanner client-header "$xml" "$out/wlr-virtual-pointer-unstable-v1-client-protocol.h"
+wayland-scanner private-code "$xml" "$out/wlr-virtual-pointer-unstable-v1-protocol.c"
+gcc -O2 -Wall -Wextra -I"$out" -o "$out/vpointer" "$here/vpointer.c" "$out/wlr-virtual-pointer-unstable-v1-protocol.c" \
+  $(pkg-config --cflags --libs wayland-client) -lm
+echo "$out/vpointer"

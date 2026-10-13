@@ -1,0 +1,243 @@
+#!/bin/bash
+# demo/setup <demo-home>
+# Builds a throwaway home for the demo: three made-up teams under ~/Projects,
+# each with a mise config, its own Chrome profile and an "intranet" page; an
+# Omarchy bar with this plugin; and a Hyprland config that loads Omarchy plus
+# Projectspaces. demo/session starts a nested Hyprland on it.
+
+set -euo pipefail
+
+DEMO=${1:?usage: demo/setup <demo-home>}
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+THEME=${DEMO_THEME:-tokyo-night}
+
+# It is wiped and rebuilt, so it must be a folder this script made (or none).
+if [[ -d $DEMO && -n $(ls -A "$DEMO") && ! -f $DEMO/.omaprojectspace-demo ]]; then
+  echo "refusing to wipe $DEMO: not a demo home made by demo/setup" >&2
+  exit 1
+fi
+rm -rf "$DEMO"
+mkdir -p "$DEMO"
+touch "$DEMO/.omaprojectspace-demo"
+DEMO=$(cd "$DEMO" && pwd)
+
+# Everything that writes state runs as the demo home with no XDG overrides,
+# so nothing lands in the real ~/.local/state (mise trust, theme templates).
+demo_env() {
+  env -i HOME="$DEMO" USER="${USER:-demo}" LANG="${LANG:-C.UTF-8}" \
+    PATH="$DEMO/.local/bin:/usr/local/bin:/usr/bin" OMARCHY_PATH=/usr/share/omarchy "$@"
+}
+
+# ------------------------------------------------------------------ teams
+
+team() {
+  local folder=$1 name=$2 color=$3 accent=$4 tagline=$5
+  local home=$DEMO/Projects/$folder
+  mkdir -p "$home"/{api,web,infra} "$DEMO/.claude.$folder"
+
+  cat >"$home/mise.toml" <<EOF
+# The $name projectspace. Everything launched on a workspace attached to
+# this folder gets this env and starts here.
+[env]
+PROJECTSPACE = "$name"
+PROJECTSPACE_COLOR = "$color"
+CLAUDE_CONFIG_DIR = "{{env.HOME}}/.claude.$folder"
+HERDR_SESSION = "$folder"
+BROWSER = "{{env.HOME}}/.local/bin/chrome-$folder"
+AWS_PROFILE = "$folder-dev"
+EOF
+
+  # A browser per team: its own Chrome profile, opening its intranet.
+  mkdir -p "$DEMO/.local/bin"
+  cat >"$DEMO/.local/bin/chrome-$folder" <<EOF
+#!/bin/sh
+exec google-chrome-stable --user-data-dir="\$HOME/.config/chrome-$folder" \\
+  --no-first-run --no-default-browser-check --disable-sync --password-store=basic \\
+  --class=chrome-$folder "\${@:-http://$folder.localhost:4321/}"
+EOF
+  chmod +x "$DEMO/.local/bin/chrome-$folder"
+
+  # The profile wears the team's color, in dark mode, under the team's name.
+  local argb profile=$DEMO/.config/chrome-$folder/Default
+  argb=$(( 0xFF${color#\#} - 4294967296 ))
+  mkdir -p "$profile"
+  jq -n --argjson c "$argb" --arg name "$name" '{
+    browser: { theme: {
+      user_color: $c, user_color2: $c, color_variant: 1, color_variant2: 1,
+      is_grayscale: false, is_grayscale2: false, follows_system_colors: false,
+      color_scheme: 2, color_scheme2: 2
+    } },
+    profile: { name: $name },
+    session: { restore_on_startup: 5 }
+  }' >"$profile/Preferences"
+
+  cat >"$home/intranet.html" <<EOF
+<!doctype html><meta charset=utf-8><title>$name intranet</title>
+<style>
+  html,body{margin:0;height:100%;font:16px/1.5 system-ui,sans-serif;background:#0f1117;color:#e6e6e6}
+  header{padding:28px 48px;background:$color;color:#111;font-weight:700;font-size:28px;letter-spacing:-.01em}
+  header small{display:block;font-weight:500;font-size:15px;opacity:.75}
+  main{padding:40px 48px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:20px;max-width:1100px}
+  .card{background:#181b24;border-radius:12px;padding:20px;border-left:4px solid $accent}
+  .card b{display:block;margin-bottom:6px}
+  .who{position:fixed;right:32px;top:32px;background:#111a;color:#fff;padding:6px 14px;border-radius:99px;font-size:14px}
+</style>
+<header>$name<small>$tagline</small></header>
+<div class=who>signed in · you@$folder.example</div>
+<main>
+  <div class=card><b>Deploys</b>api · web · infra are green</div>
+  <div class=card><b>On call</b>You, until Friday</div>
+  <div class=card><b>Standup</b>10:00 in #$folder-eng</div>
+</main>
+EOF
+
+  git -C "$home/api" init -q 2>/dev/null || true
+  echo "# $name API" >"$home/api/README.md"
+  echo "# $name web" >"$home/web/README.md"
+}
+
+team acme "Acme" "#E8913A" "#E8913A" "Rockets, anvils and other fine products"
+team globex "Globex" "#4C8DDB" "#4C8DDB" "Hank Scorpio's engineering org"
+team initech "Initech" "#4FAE6B" "#4FAE6B" "TPS reports, now with cover sheets"
+mkdir -p "$DEMO/Projects/scratch"
+
+# ---------------------------------------------------------------- desktop
+
+mkdir -p "$DEMO/.config/hypr" "$DEMO/.config/omarchy/plugins" "$DEMO/.local/state/omarchy" "$DEMO/.config/omaprojectspace"
+
+cat >"$DEMO/.config/hypr/hyprland.lua" <<'EOF'
+dofile((os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/hypr/bootstrap.lua")
+
+-- Omarchy's autostart exports this session's env into the systemd user
+-- manager, which is the real session's: a nested demo must never do that.
+-- Skip it and start only the shell.
+package.loaded["default.hypr.autostart"] = true
+require("default.hypr.omarchy")
+hl.on("hyprland.start", function()
+  hl.exec_cmd("omarchy-launch-shell")
+end)
+require("default.hypr.toggles")
+
+-- One output the size of the screen the demo is recorded on.
+-- 1.5x, so the bar and terminals read at video size.
+hl.monitor({ output = "", mode = "DEMO_MODE", position = "auto", scale = 1.5 })
+-- A nested session is the point here, not a mistake.
+hl.config({ misc = { disable_watchdog_warning = true } })
+-- Draw the pointer into the frame: a nested compositor otherwise hands it
+-- to the outer one, and the recording would show no cursor at all.
+hl.config({ cursor = { no_hardware_cursors = 1 } })
+hl.env("XCURSOR_THEME", "Adwaita")
+hl.env("XCURSOR_SIZE", "24")
+EOF
+sed -i "s/DEMO_MODE/${DEMO_MODE:-1920x1200}/" "$DEMO/.config/hypr/hyprland.lua"
+
+# Second guard for the same thing: anything in the demo that tries to push
+# its env into systemd or D-Bus activation gets a no-op instead.
+mkdir -p "$DEMO/.local/bin"
+# The demo shares the machine's logind and systemd user manager, so its
+# power menu would suspend, reboot or log out the real session. Every such
+# path is a logged no-op here.
+blocked=$DEMO/.blocked-commands.log
+cat >"$DEMO/.local/bin/systemctl" <<GUARD
+#!/bin/bash
+for arg in "\$@"; do
+  case \$arg in
+  import-environment | set-environment | unset-environment | poweroff | reboot | halt | kexec | \\
+    suspend | hibernate | hybrid-sleep | suspend-then-hibernate | sleep | soft-reboot | exit)
+    echo "\$(date +%T) systemctl \$*" >>"$blocked"
+    exit 0 ;;
+  esac
+done
+exec /usr/bin/systemctl "\$@"
+GUARD
+for name in dbus-update-activation-environment loginctl uwsm shutdown reboot poweroff halt \
+  omarchy-system-logout omarchy-system-reboot omarchy-system-shutdown omarchy-system-lock \
+  omarchy-system-factory-reset omarchy-system-factory-reset-finish omarchy-system-sleep-lock \
+  omarchy-system-lid-close omarchy-lock-screen; do
+  # shellcheck disable=SC2016  # expanded when the stub runs
+  printf '#!/bin/sh\necho "$(date +%%T) %s $*" >>"%s"\nexit 0\n' "$name" "$blocked" >"$DEMO/.local/bin/$name"
+done
+chmod +x "$DEMO/.local/bin"/*
+
+# Omarchy's first-login provisioning, welcome notifications and migrations
+# are for real accounts: mark them all done.
+mkdir -p "$DEMO/.local/state/omarchy/done" "$DEMO/.local/state/omarchy/migrations"
+touch "$DEMO/.local/state/omarchy/first-run-user"
+for marker in first-run-user finalize-user agent-setup-invitation; do
+  touch "$DEMO/.local/state/omarchy/done/$marker"
+done
+for migration in /usr/share/omarchy/migrations/*; do
+  touch "$DEMO/.local/state/omarchy/migrations/${migration##*/}"
+done
+
+cat >"$DEMO/.config/omarchy/shell.json" <<'EOF'
+{
+  "version": 1,
+  "bar": {
+    "position": "top",
+    "centerAnchor": "omarchy.clock",
+    "layout": {
+      "left": [
+        { "id": "omarchy.menu" },
+        { "id": "mehiel.omaprojectspace" }
+      ],
+      "center": [
+        { "id": "omarchy.clock", "format": "HH:mm" }
+      ],
+      "right": [
+        { "id": "omarchy.audio" },
+        { "id": "omarchy.network" },
+        { "id": "omarchy.power" }
+      ]
+    }
+  },
+  "plugins": []
+}
+EOF
+
+echo "foot.desktop" >"$DEMO/.config/xdg-terminals.list"
+
+cat >"$DEMO/.bashrc" <<'EOF'
+source /usr/share/omarchy/default/bash/rc
+EOF
+cp "$DEMO/.bashrc" "$DEMO/.bash_profile"
+
+# Workspaces 1 and 2 start attached; Initech gets attached on camera.
+cat >"$DEMO/.config/omaprojectspace/attachments.json" <<'EOF'
+{"version": 1, "workspaces": {"1": "~/Projects/acme", "2": "~/Projects/globex"}}
+EOF
+
+# The plugin, CLI, shim and binds, linked as `install` does, without
+# install's reload of the (outer) running session.
+ln -sfn "$REPO" "$DEMO/.config/omarchy/plugins/mehiel.omaprojectspace"
+ln -sfn "$REPO/bin/omaprojectspace" "$DEMO/.local/bin/omaprojectspace"
+ln -sfn "$REPO/shim/uwsm-app" "$DEMO/.local/bin/uwsm-app"
+ln -sfn "$REPO/hypr/omaprojectspace.lua" "$DEMO/.config/hypr/omaprojectspace.lua"
+grep -q 'hypr.omaprojectspace' "$DEMO/.config/hypr/hyprland.lua" ||
+  echo 'require("hypr.omaprojectspace")' >>"$DEMO/.config/hypr/hyprland.lua"
+
+for t in acme globex initech; do
+  demo_env mise trust -q "$DEMO/Projects/$t/mise.toml" >/dev/null 2>&1 || true
+done
+
+# ------------------------------------------------------------------ theme
+# By hand, not omarchy-theme-set: that also restyles the real session's
+# browser policy. Only the files the shell, foot and Hyprland read.
+state=$DEMO/.local/state/omarchy/current
+mkdir -p "$state/next-theme" "$DEMO/.config"
+cp -r "/usr/share/omarchy/themes/$THEME/." "$state/next-theme/"
+demo_env omarchy-theme-set-templates >/dev/null 2>&1 || true
+mv "$state/next-theme" "$state/theme"
+echo "$THEME" >"$state/theme.name"
+background=$(find "$state/theme/backgrounds" -maxdepth 1 -type f | sort | head -1)
+[[ -n $background ]] && ln -sfn "$background" "$state/background"
+for config in foot starship.toml btop; do
+  [[ -e /usr/share/omarchy/config/$config ]] && cp -r "/usr/share/omarchy/config/$config" "$DEMO/.config/"
+done
+# Terminal text big enough to read in the video.
+sed -i 's/^font=\(.*\):size=[0-9]*/font=\1:size=12/' "$DEMO/.config/foot/foot.ini"
+grep -q '^font=' "$DEMO/.config/foot/foot.ini" || sed -i '1i font=JetBrainsMono Nerd Font:size=12' "$DEMO/.config/foot/foot.ini"
+grep -q '^pad=' "$DEMO/.config/foot/foot.ini" || sed -i '/^\[main\]/a pad=18x14' "$DEMO/.config/foot/foot.ini"
+
+echo "$THEME" >"$DEMO/.theme"
+echo "demo home ready: $DEMO"

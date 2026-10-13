@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projectspaces for Omarchy</title>
+<meta name="description" content="Attach a Hyprland workspace to a team folder. Everything you launch there starts in that folder, with that team's mise env and that team's browser profile.">
+<meta property="og:title" content="Projectspaces for Omarchy">
+<meta property="og:description" content="Give every workspace a team: its folder, its env, its browser.">
+<meta property="og:image" content="media/poster.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23E8913A'/%3E%3Ccircle cx='24' cy='8' r='6' fill='%234C8DDB'/%3E%3Ccircle cx='40' cy='8' r='6' fill='%234FAE6B'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #12131a;
+    --bg-raised: #191b26;
+    --bg-sunk: #0d0e14;
+    --line: #2a2e42;
+    --text: #c0caf5;
+    --text-strong: #eef0fb;
+    --text-dim: #7c83a8;
+    --blue: #7aa2f7;
+    --acme: #E8913A;
+    --globex: #4C8DDB;
+    --initech: #4FAE6B;
+    --radius: 16px;
+    --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", ui-monospace, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1000px 600px at 12% -10%, color-mix(in srgb, var(--acme) 16%, transparent), transparent 70%),
+      radial-gradient(900px 600px at 95% 0%, color-mix(in srgb, var(--globex) 18%, transparent), transparent 70%),
+      var(--bg);
+    background-repeat: no-repeat;
+    color: var(--text);
+    font: 17px/1.6 Inter, "Adwaita Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, kbd { font-family: var(--mono); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- nav */
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .brand { display: flex; align-items: center; gap: 12px; color: var(--text-strong); font-weight: 700; letter-spacing: -0.01em; }
+  .brand:hover { text-decoration: none; }
+  .dots { display: inline-flex; gap: 6px; }
+  .dots i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+  .dots i:nth-child(1) { background: var(--acme); }
+  .dots i:nth-child(2) { background: var(--globex); }
+  .dots i:nth-child(3) { background: var(--initech); }
+  .nav-links { display: flex; gap: 22px; font-size: 15px; }
+  .nav-links a { color: var(--text-dim); }
+  .nav-links a:hover { color: var(--text-strong); text-decoration: none; }
+
+  /* ---- hero */
+  .hero { text-align: center; padding: 56px 0 28px; }
+  .kicker { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--text-dim);
+            border: 1px solid var(--line); background: var(--bg-raised); padding: 6px 14px; border-radius: 999px; }
+  h1 { font-size: clamp(42px, 7vw, 76px); line-height: 1.04; letter-spacing: -0.04em; margin: 26px auto 22px;
+       color: var(--text-strong); font-weight: 800; max-width: 900px; }
+  h1 .grad { background: linear-gradient(90deg, var(--acme), var(--globex) 55%, var(--initech)); -webkit-background-clip: text;
+             background-clip: text; color: transparent; }
+  .lede { font-size: clamp(18px, 2.2vw, 21px); color: var(--text); max-width: 760px; margin: 0 auto; }
+  .lede b { color: var(--text-strong); font-weight: 600; }
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin: 36px 0 0; }
+  .install { display: flex; align-items: center; gap: 12px; background: var(--bg-sunk); border: 1px solid var(--line);
+             border-radius: 12px; padding: 10px 10px 10px 18px; font: 14.5px var(--mono); color: var(--text); max-width: 100%; }
+  .install span { color: var(--text-dim); }
+  .install code { overflow-x: auto; white-space: nowrap; }
+  .copy { flex: none; border: 1px solid var(--line); background: var(--bg-raised); color: var(--text); border-radius: 8px;
+          padding: 6px 12px; font: 600 13px Inter, sans-serif; cursor: pointer; }
+  .copy:hover { border-color: var(--blue); color: var(--text-strong); }
+  .button { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 12px; font-weight: 600;
+            background: var(--text-strong); color: var(--bg); }
+  .button:hover { text-decoration: none; filter: brightness(0.92); }
+
+  .video { margin: 48px auto 0; border-radius: 18px; overflow: hidden; border: 1px solid var(--line);
+           box-shadow: 0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02); background: #000; }
+  .video video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 10; }
+
+  /* ---- sections */
+  section { padding: 96px 0 0; }
+  .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--blue); }
+  h2 { font-size: clamp(30px, 4vw, 42px); letter-spacing: -0.03em; line-height: 1.15; margin: 10px 0 14px; color: var(--text-strong); }
+  .sub { color: var(--text-dim); max-width: 700px; margin: 0; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 40px; }
+  .card { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+  .step-n { font: 600 13px var(--mono); color: var(--text-dim); }
+  .card h3 { margin: 8px 0 8px; color: var(--text-strong); font-size: 19px; letter-spacing: -0.01em; }
+  .card p { margin: 0 0 16px; color: var(--text); font-size: 15.5px; }
+  pre { margin: 0; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+        font-size: 13px; line-height: 1.6; overflow-x: auto; color: var(--text); }
+  .k { color: #bb9af7; } .s { color: #9ece6a; } .c { color: #565f89; } .h { color: #7dcfff; }
+
+  .flow { margin-top: 20px; }
+  .flow svg { width: 100%; height: auto; display: block; }
+
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 40px; }
+  .feature { padding: 22px; }
+  .feature .icon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; margin-bottom: 14px;
+                   background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+  .feature h3 { font-size: 17px; margin: 0 0 6px; }
+  .feature p { margin: 0; font-size: 15px; color: var(--text-dim); }
+
+  .gallery { display: grid; grid-template-columns: 1.7fr 1fr; gap: 20px; margin-top: 40px; align-items: start; }
+  figure { margin: 0; }
+  figure img { width: 100%; display: block; border-radius: 14px; border: 1px solid var(--line); }
+  figcaption { font-size: 14px; color: var(--text-dim); margin-top: 10px; }
+  .stack { display: grid; gap: 20px; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 40px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  td { padding: 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { width: 42%; padding-right: 12px; }
+  kbd { font-size: 12.5px; background: var(--bg-sunk); border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 6px; padding: 1px 7px; color: var(--text-strong); white-space: nowrap; }
+
+  .limits { margin-top: 32px; display: grid; gap: 14px; }
+  .limit { display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: start; }
+  .limit .mark { color: var(--acme); font-weight: 700; }
+  .limit p { margin: 0; }
+  .limit b { color: var(--text-strong); }
+
+  footer { margin: 110px 0 0; padding: 36px 0 60px; border-top: 1px solid var(--line); color: var(--text-dim); font-size: 14.5px;
+           display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+
+  @media (max-width: 900px) {
+    .steps, .features, .gallery, .two { grid-template-columns: 1fr; }
+    .nav-links a:not(.gh) { display: none; }
+    section { padding-top: 72px; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#"><span class="dots"><i></i><i></i><i></i></span>Projectspaces</a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a class="gh" href="https://github.com/mehiel/mehiel.omaprojectspace">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <span class="kicker"><span class="dots"><i></i><i></i><i></i></span> An Omarchy plugin</span>
+    <h1>Every workspace,<br><span class="grad">its own team.</span></h1>
+    <p class="lede">Attach a Hyprland workspace to a team folder. Everything you launch there starts <b>in that folder</b>,
+      with <b>that team's mise env</b> (Claude config, herdr session, cloud profile, tool versions) and opens
+      <b>that team's browser profile</b>.</p>
+    <div class="cta">
+      <div class="install"><span>$</span><code id="cmd">omarchy plugin add https://github.com/mehiel/mehiel.omaprojectspace</code>
+        <button class="copy" data-copy="cmd">Copy</button></div>
+    </div>
+    <div class="video">
+      <video src="media/demo.mp4" poster="media/poster.jpg" controls muted playsinline preload="metadata"></video>
+    </div>
+  </header>
+
+  <section id="how">
+    <div class="eyebrow">How it works</div>
+    <h2>Folders, mise, and one small shim.</h2>
+    <p class="sub">There's no registry and no daemon. A projectspace is a folder, its configuration is its mise config,
+      and the only state is which workspace points at which folder.</p>
+
+    <div class="steps">
+      <div class="card">
+        <div class="step-n">01</div>
+        <h3>A folder with a mise config</h3>
+        <p>Any folder under <code>~/Projects</code> with a <code>mise.toml</code> is a projectspace. Projects inside it inherit it.</p>
+<pre><span class="c"># ~/Projects/acme/mise.toml</span>
+<span class="h">[env]</span>
+CLAUDE_CONFIG_DIR = <span class="s">"~/.claude.acme"</span>
+HERDR_SESSION     = <span class="s">"acme"</span>
+AWS_PROFILE       = <span class="s">"acme-dev"</span>
+BROWSER           = <span class="s">"~/.local/bin/chrome-acme"</span>
+PROJECTSPACE_COLOR = <span class="s">"#E8913A"</span></pre>
+      </div>
+      <div class="card">
+        <div class="step-n">02</div>
+        <h3>Attach a workspace</h3>
+        <p>From the bar's panel (<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>P</kbd>, then <kbd>←</kbd> <kbd>→</kbd>) or the CLI. The bar marks it with the team's color.</p>
+<pre><span class="k">$</span> omaprojectspace attach 1 acme
+workspace 1 → acme (~/Projects/acme)
+<span class="k">$</span> omaprojectspace list
+Acme     ~/Projects/acme     ws 1
+Globex   ~/Projects/globex   ws 2
+Initech  ~/Projects/initech  -</pre>
+      </div>
+      <div class="card">
+        <div class="step-n">03</div>
+        <h3>Launch anything</h3>
+        <p>Omarchy launches everything through <code>uwsm-app</code>. A shim in front of it adds the active workspace's env and folder.</p>
+<pre><span class="k">$</span> omaprojectspace status
+workspace 1: Acme  ~/Projects/acme
+  AWS_PROFILE=acme-dev
+  BROWSER=~/.local/bin/chrome-acme
+  CLAUDE_CONFIG_DIR=~/.claude.acme
+  HERDR_SESSION=acme</pre>
+      </div>
+    </div>
+
+    <div class="card flow" aria-label="Launch flow">
+      <svg viewBox="0 0 1060 150" role="img" aria-labelledby="flow-title">
+        <title id="flow-title">A launch goes from the app launcher or a keybind, through uwsm-app and the shim, which adds mise env and the folder, to the app.</title>
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#565f89"/>
+          </marker>
+        </defs>
+        <g font-family="Inter, sans-serif" font-size="15" text-anchor="middle">
+          <rect x="10" y="40" width="190" height="70" rx="14" fill="#0d0e14" stroke="#2a2e42"/>
+          <text x="105" y="70" fill="#eef0fb" font-weight="600">Launcher · keybind</text>
+          <text x="105" y="92" fill="#7c83a8" font-size="13">terminal · browser · app</text>
+
+          <rect x="250" y="40" width="170" height="70" rx="14" fill="#0d0e14" stroke="#2a2e42"/>
+          <text x="335" y="70" fill="#eef0fb" font-weight="600" font-family="JetBrains Mono, monospace">uwsm-app</text>
+          <text x="335" y="92" fill="#7c83a8" font-size="13">the shim, on PATH</text>
+
+          <rect x="470" y="22" width="300" height="106" rx="14" fill="#191b26" stroke="#7aa2f7"/>
+          <text x="620" y="54" fill="#eef0fb" font-weight="700">Active workspace attached?</text>
+          <text x="620" y="80" fill="#c0caf5" font-size="13.5">yes → mise env + cd into the folder</text>
+          <text x="620" y="102" fill="#7c83a8" font-size="13.5">no or broken → launch untouched</text>
+
+          <rect x="820" y="40" width="230" height="70" rx="14" fill="#0d0e14" stroke="#2a2e42"/>
+          <text x="935" y="70" fill="#eef0fb" font-weight="600">/usr/bin/uwsm-app</text>
+          <text x="935" y="92" fill="#7c83a8" font-size="13">the app, in its own scope</text>
+
+          <line x1="200" y1="75" x2="246" y2="75" stroke="#565f89" stroke-width="2" marker-end="url(#arrow)"/>
+          <line x1="420" y1="75" x2="466" y2="75" stroke="#565f89" stroke-width="2" marker-end="url(#arrow)"/>
+          <line x1="770" y1="75" x2="816" y2="75" stroke="#565f89" stroke-width="2" marker-end="url(#arrow)"/>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="eyebrow">Features</div>
+    <h2>Small, and it gets out of the way.</h2>
+    <div class="features">
+      <div class="card feature"><div class="icon">●</div><h3>The bar knows the team</h3>
+        <p>Attached workspaces carry the team's dot and name. A custom name wins, and the dot stays.</p></div>
+      <div class="card feature"><div class="icon">⌨</div><h3>A keyboard panel</h3>
+        <p>Pick a row, cycle its projectspace with <kbd>←</kbd> <kbd>→</kbd>, rename with <kbd>e</kbd>, open a team terminal with <kbd>t</kbd>.</p></div>
+      <div class="card feature"><div class="icon">◐</div><h3>A browser per team</h3>
+        <p>Set <code>BROWSER</code> in mise and the browser keybind opens that team's Chrome profile.</p></div>
+      <div class="card feature"><div class="icon">❯</div><h3>Terminals open in the folder</h3>
+        <p>A new terminal starts in the team folder. One opened from another terminal keeps that terminal's folder.</p></div>
+      <div class="card feature"><div class="icon">✓</div><h3>Fails open</h3>
+        <p>Untrusted config, missing folder, any error: the app still launches, plainly, and you get a notification.</p></div>
+      <div class="card feature"><div class="icon">⎋</div><h3>Easy to switch off</h3>
+        <p><code>OMAPROJECTSPACE=off</code> per launch, <code>omaprojectspace doctor</code> to check, <code>uninstall</code> to remove every link.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">In practice</div>
+    <h2>Two teams, side by side.</h2>
+    <div class="gallery">
+      <div class="stack">
+        <figure><img src="media/teams.jpg" alt="Workspace 2, Globex: a terminal in ~/Projects/globex showing Globex's env, next to Chrome in the Globex profile on the Globex intranet." loading="lazy">
+          <figcaption>Workspace 2 is Globex: the terminal starts in its folder with its env, and the browser is its own Chrome profile.</figcaption></figure>
+        <figure><img src="media/config.png" alt="A terminal showing the Initech mise.toml and omaprojectspace list." loading="lazy">
+          <figcaption>A projectspace is just its <code>mise.toml</code>.</figcaption></figure>
+        <figure><img src="media/bar.png" alt="The bar strip: a blue dot before Globex, an orange dot before Acme, and the settings gear." loading="lazy">
+          <figcaption>Hover the strip to see this monitor's other workspaces.</figcaption></figure>
+      </div>
+      <figure><img src="media/panel.png" alt="The Projectspaces panel: ten workspace rows, workspace 3 being renamed to Reports, and the Initech projectspace's chips and env." loading="lazy">
+        <figcaption>The panel: attach with the chips or the arrow keys; see what the projectspace sets.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="eyebrow">Install</div>
+    <h2>Two commands.</h2>
+    <div class="two">
+      <div class="card">
+        <h3>1 · Add the plugin, then link the shim</h3>
+<pre><span class="k">$</span> omarchy plugin add https://github.com/mehiel/mehiel.omaprojectspace
+<span class="k">$</span> ~/.config/omarchy/plugins/mehiel.omaprojectspace/bin/omaprojectspace install
+<span class="k">$</span> omarchy bar put mehiel.omaprojectspace
+<span class="k">$</span> omaprojectspace doctor</pre>
+        <p style="margin:16px 0 0;font-size:15px;color:var(--text-dim)"><code>install</code> links the CLI and the shim into <code>~/.local/bin</code> and adds the
+          keybinds to Hyprland. <code>uninstall</code> removes all of it.</p>
+      </div>
+      <div class="card">
+        <h3>Keys in the panel</h3>
+        <table>
+          <tr><td><kbd>↑</kbd> <kbd>↓</kbd> · <kbd>1</kbd>–<kbd>0</kbd></td><td>pick a workspace</td></tr>
+          <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>cycle its projectspace</td></tr>
+          <tr><td><kbd>Enter</kbd></td><td>go there</td></tr>
+          <tr><td><kbd>e</kbd></td><td>rename</td></tr>
+          <tr><td><kbd>x</kbd></td><td>clear the projectspace, then the name</td></tr>
+          <tr><td><kbd>t</kbd> · <kbd>c</kbd></td><td>team terminal · edit its mise config</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Good to know</div>
+    <h2>What it doesn't do (yet).</h2>
+    <div class="limits">
+      <div class="limit"><span class="mark">—</span><p><b>Running single-instance apps keep their env.</b> A Slack desktop that's already open won't switch teams. Chrome is fine: a new window opens in the right profile.</p></div>
+      <div class="limit"><span class="mark">—</span><p><b>Links clicked inside other apps</b> go to your default browser, not the team's.</p></div>
+      <div class="limit"><span class="mark">—</span><p><b>Windows keep the env they started with</b>, even if you move them to another workspace.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span><span class="dots" style="margin-right:10px"><i></i><i></i><i></i></span>Projectspaces · MIT · made for <a href="https://omarchy.org">Omarchy</a></span>
+    <span><a href="https://github.com/mehiel/mehiel.omaprojectspace">Source</a> · <a href="https://github.com/mehiel/mehiel.omaprojectspace/issues">Issues</a></span>
+  </footer>
+</div>
+<script>
+  document.querySelectorAll("[data-copy]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var text = document.getElementById(button.dataset.copy).textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        button.textContent = "Copied";
+        setTimeout(function () { button.textContent = "Copy"; }, 1500);
+      });
+    });
+  });
+</script>
+</body>
+</html>

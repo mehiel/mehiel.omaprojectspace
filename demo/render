@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""demo/render <take-dir> <out-dir>
+
+Turns a demo/record take (raw.mp4 + captions.tsv) into the published media:
+
+  demo.mp4      title card, the footage with captions and eased zooms, end card
+  demo.gif      a short loop for the README
+  poster.jpg    the video's poster frame
+  preview.png   the plugin listing image (bar + panel), at the repo root
+
+Cards and captions are HTML rendered by headless Chrome (in a throwaway
+profile) so they share the website's typography.
+"""
+
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent
+TAKE = pathlib.Path(sys.argv[1]).resolve()
+OUT = pathlib.Path(sys.argv[2]).resolve()
+BUILD = TAKE / "build"
+W, H, FPS = 1920, 1200, 60
+
+TITLE_SECONDS = 4.0
+END_SECONDS = 5.0
+FADE = 0.6
+
+TEAMS = [("Acme", "#E8913A"), ("Globex", "#4C8DDB"), ("Initech", "#4FAE6B")]
+
+BASE_CSS = """
+  @font-face { font-family: UI; src: local("Adwaita Sans"); }
+  html, body { margin: 0; width: 1920px; height: 1200px; overflow: hidden; }
+  body { font-family: "Adwaita Sans", "Noto Sans", sans-serif; color: #c0caf5;
+         -webkit-font-smoothing: antialiased; }
+  .mono { font-family: "JetBrainsMono Nerd Font", monospace; }
+"""
+
+
+def run(cmd, **kw):
+    subprocess.run(cmd, check=True, **kw)
+
+
+def chrome_png(html, path, transparent=False):
+    """Renders an HTML string to a 1920x1200 PNG."""
+    page = BUILD / (path.stem + ".html")
+    page.write_text(html)
+    profile = tempfile.mkdtemp(prefix="omaps-render-")
+    try:
+        cmd = ["google-chrome-stable", "--headless=new", "--disable-gpu", "--hide-scrollbars",
+               "--no-first-run", "--no-default-browser-check", f"--user-data-dir={profile}",
+               f"--window-size={W},{H}", f"--screenshot={path}", "--force-device-scale-factor=1"]
+        if transparent:
+            cmd.append("--default-background-color=00000000")
+        run(cmd + [page.as_uri()], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def dots(size, gap):
+    return "".join(
+        f'<span style="display:inline-block;width:{size}px;height:{size}px;border-radius:50%;'
+        f'background:{c};margin:0 {gap}px;box-shadow:0 0 {size}px {c}66"></span>' for _, c in TEAMS)
+
+
+def backdrop():
+    glows = ", ".join(
+        f"radial-gradient(circle at {x}% {y}%, {c}2e 0, transparent 38%)"
+        for (_, c), (x, y) in zip(TEAMS, [(18, 22), (82, 30), (50, 92)]))
+    return f"background: {glows}, linear-gradient(160deg, #1f2335 0%, #16161e 100%);"
+
+
+def title_card():
+    return f"""<!doctype html><meta charset=utf-8><style>{BASE_CSS}
+  body {{ {backdrop()} display:flex; flex-direction:column; align-items:center; justify-content:center; }}
+  .dots {{ margin-bottom: 64px; }}
+  h1 {{ font-size: 148px; font-weight: 800; letter-spacing: -0.035em; margin: 0; color: #e6e9f8; }}
+  h2 {{ font-size: 46px; font-weight: 500; margin: 8px 0 56px; color: #7aa2f7; letter-spacing: -0.01em; }}
+  p {{ font-size: 38px; margin: 0; color: #a9b1d6; max-width: 1300px; text-align: center; line-height: 1.4; }}
+  b {{ color: #e6e9f8; font-weight: 600; }}
+</style>
+<div class=dots>{dots(34, 18)}</div>
+<h1>Projectspaces</h1>
+<h2>for Omarchy</h2>
+<p>Give every workspace a team: <b>its folder</b>, <b>its env</b>, <b>its browser</b>.</p>
+"""
+
+
+def end_card():
+    return f"""<!doctype html><meta charset=utf-8><style>{BASE_CSS}
+  body {{ {backdrop()} display:flex; flex-direction:column; align-items:center; justify-content:center; }}
+  h1 {{ font-size: 92px; font-weight: 800; letter-spacing: -0.03em; margin: 40px 0 18px; color: #e6e9f8; }}
+  .url {{ font-size: 44px; color: #7aa2f7; margin-bottom: 70px; }}
+  .cmd {{ font-size: 32px; background: #0f1017cc; border: 1px solid #3b4261; border-radius: 18px;
+          padding: 26px 40px; color: #c0caf5; }}
+  .cmd span {{ color: #565f89; }}
+  .meta {{ margin-top: 60px; font-size: 30px; color: #737aa2; letter-spacing: 0.02em; }}
+</style>
+<div>{dots(26, 14)}</div>
+<h1>Projectspaces</h1>
+<div class="url mono">github.com/mehiel/mehiel.omaprojectspace</div>
+<div class="cmd mono"><span>$</span> omarchy plugin add https://github.com/mehiel/mehiel.omaprojectspace</div>
+<div class=meta>MIT &nbsp;·&nbsp; Omarchy 4 &nbsp;·&nbsp; plain folders + mise</div>
+"""
+
+
+def caption_card(text, align="center"):
+    justify = {"center": "center", "right": "flex-end"}[align]
+    return f"""<!doctype html><meta charset=utf-8><style>{BASE_CSS}
+  body {{ background: transparent; display:flex; align-items:flex-end; justify-content:{justify}; }}
+  .pill {{ margin: 0 72px 64px; padding: 22px 44px; border-radius: 999px; font-size: 40px; font-weight: 600;
+           color: #f2f4ff; background: rgba(16,17,26,0.86); border: 1.5px solid rgba(122,162,247,0.45);
+           box-shadow: 0 18px 60px rgba(0,0,0,0.45); letter-spacing: -0.005em; }}
+</style><div class=pill>{text}</div>
+"""
+
+
+# Captions land a beat after the scene starts, so they describe what is on
+# screen rather than what is about to be.
+CAPTION_DELAY = 0.9
+# The panel scene keeps the left half clear: that is where the panel is.
+CAPTION_ALIGN = {4: "right"}
+
+
+def read_captions():
+    rows = []
+    for line in (TAKE / "captions.tsv").read_text().splitlines():
+        t, text = line.split("\t", 1)
+        rows.append((float(t), text))
+    return rows
+
+
+def duration(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                         check=True, capture_output=True, text=True).stdout
+    return float(out.strip())
+
+
+def zoom_expr(segments, ramp=0.7):
+    """zoompan's z as a sum of eased bumps: each (start, end, zoom) rises over
+    `ramp` seconds, holds, and settles back to 1."""
+    terms = []
+    for a, b, z in segments:
+        up = f"clip((it-{a:.3f})/{ramp},0,1)"
+        down = f"clip(({b:.3f}-it)/{ramp},0,1)"
+        ease = lambda s: f"({s}*{s}*(3-2*{s}))"
+        terms.append(f"{z - 1:.3f}*{ease(up)}*{ease(down)}")
+    return "1+" + "+".join(terms)
+
+
+def main():
+    BUILD.mkdir(parents=True, exist_ok=True)
+    OUT.mkdir(parents=True, exist_ok=True)
+    raw = TAKE / "raw.mp4"
+    total = duration(raw)
+    caps = read_captions()
+    starts = [t for t, _ in caps]
+
+    # ---- stills
+    chrome_png(title_card(), BUILD / "title.png")
+    chrome_png(end_card(), BUILD / "end.png")
+    for i, (_, text) in enumerate(caps):
+        chrome_png(caption_card(text, CAPTION_ALIGN.get(i, "center")), BUILD / f"caption{i}.png", transparent=True)
+
+    # ---- zooms, keyed to the storyboard's captions (demo/record order):
+    # the bar while it is hovered, the terminal output, the panel, the config.
+    c = starts
+    segments = [
+        (c[0] + 0.6, c[0] + 4.4, 2.6),
+        (c[1] + 3.6, c[2] - 0.2, 1.55),
+        (c[4] + 2.2, c[5] - 0.3, 1.45),
+        (c[5] + 3.4, total - 0.4, 1.5),
+    ]
+    z = zoom_expr(segments)
+
+    # ---- footage: zoom, then captions on top (so they never zoom)
+    inputs = ["-i", str(raw)]
+    for i in range(len(caps)):
+        inputs += ["-loop", "1", "-t", f"{total:.3f}", "-i", str(BUILD / f"caption{i}.png")]
+    graph = [f"[0:v]fps={FPS},scale={W}:{H},zoompan=z='{z}':x=0:y=0:d=1:s={W}x{H}:fps={FPS},setsar=1[z0]"]
+    last = "z0"
+    shown = [t + (CAPTION_DELAY if i else 0) for i, (t, _) in enumerate(caps)]
+    for i, t in enumerate(shown):
+        end = (shown[i + 1] - 0.25) if i + 1 < len(shown) else total - 0.3
+        graph.append(f"[{i + 1}:v]format=rgba,fade=t=in:st={t:.3f}:d=0.35:alpha=1,"
+                     f"fade=t=out:st={end - 0.35:.3f}:d=0.35:alpha=1[c{i}]")
+        graph.append(f"[{last}][c{i}]overlay=0:0:enable='between(t,{t:.3f},{end:.3f})'[z{i + 1}]")
+        last = f"z{i + 1}"
+    footage = BUILD / "footage.mp4"
+    run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(graph), "-map", f"[{last}]",
+         "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p",
+         str(footage)])
+
+    # ---- cards with a slow push-in, joined with crossfades
+    def card_clip(png, seconds, name):
+        out = BUILD / name
+        frames = int(seconds * FPS)
+        run(["ffmpeg", "-y", "-v", "error", "-loop", "1", "-t", f"{seconds}", "-i", str(png), "-vf",
+             f"scale={W * 2}:{H * 2},zoompan=z='1+0.035*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+             f":d={frames}:s={W}x{H}:fps={FPS},setsar=1",
+             "-frames:v", str(frames), "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", str(out)])
+        return out
+
+    title = card_clip(BUILD / "title.png", TITLE_SECONDS, "title.mp4")
+    end = card_clip(BUILD / "end.png", END_SECONDS, "end.mp4")
+    first_cut = TITLE_SECONDS - FADE
+    second_cut = first_cut + total - FADE
+    video = OUT / "demo.mp4"
+    run(["ffmpeg", "-y", "-v", "error", "-i", str(title), "-i", str(footage), "-i", str(end), "-filter_complex",
+         f"[0:v][1:v]xfade=transition=fade:duration={FADE}:offset={first_cut:.3f}[a];"
+         f"[a][2:v]xfade=transition=fade:duration={FADE}:offset={second_cut:.3f},format=yuv420p[v]",
+         "-map", "[v]", "-c:v", "libx264", "-preset", "slow", "-crf", "24", "-movflags", "+faststart",
+         "-profile:v", "high", str(video)])
+
+    # ---- poster, README loop, plugin preview
+    run(["ffmpeg", "-y", "-v", "error", "-ss", "1.2", "-i", str(video), "-frames:v", "1", "-q:v", "3",
+         str(OUT / "poster.jpg")])
+
+    # The loop: launch → env → browser → switch team, at double speed.
+    a, b = TITLE_SECONDS - FADE + c[1] - 0.2, TITLE_SECONDS - FADE + c[4] - 0.4
+    palette = BUILD / "palette.png"
+    clip = f"trim={a:.3f}:{b:.3f},setpts=(PTS-STARTPTS)/2,fps=12,scale=960:-1:flags=lanczos"
+    run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"{clip},palettegen=max_colors=160:stats_mode=diff",
+         str(palette)])
+    run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(palette), "-lavfi",
+         f"{clip}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle", "-loop", "0",
+         str(OUT / "demo.gif")])
+
+    # The listing image: the panel open over the second team's windows.
+    panel_at = c[4] + 4.4
+    run(["ffmpeg", "-y", "-v", "error", "-ss", f"{panel_at:.3f}", "-i", str(raw), "-frames:v", "1",
+         "-vf", "scale=1280:-1:flags=lanczos", str(REPO / "preview.png")])
+
+    for f in ["demo.mp4", "demo.gif", "poster.jpg"]:
+        print(f"{OUT / f}  {os.path.getsize(OUT / f) / 1e6:.1f} MB")
+    print(f"{REPO / 'preview.png'}")
+
+
+main()

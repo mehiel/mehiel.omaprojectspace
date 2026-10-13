@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# uwsm-app shim (mehiel.omaprojectspace). Linked as ~/.local/bin/uwsm-app,
+# which comes before /usr/bin on the session PATH. Every Omarchy launch —
+# app launcher, keybinds, terminals, webapps — goes through uwsm-app, so this
+# is the one place a launch can pick up the active workspace's projectspace.
+# The real uwsm-app always runs in the end, with or without that env.
+
+real=${OMAPROJECTSPACE_REAL_UWSM_APP:-/usr/bin/uwsm-app}
+
+if [[ ${OMAPROJECTSPACE:-} == off ]]; then
+  exec "$real" "$@"
+fi
+
+cli="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")/bin/omaprojectspace"
+if [[ -x $cli ]]; then
+  exec "$cli" launch -- "$@"
+fi
+exec "$real" "$@"

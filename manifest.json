@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "mehiel.omaprojectspace",
+  "name": "Projectspaces",
+  "version": "0.1.0",
+  "author": "mehiel",
+  "license": "MIT",
+  "description": "Named workspaces that can be attached to a projectspace: a team folder under ~/Projects whose mise config sets the env for everything launched there.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Projectspaces",
+    "description": "This monitor's workspaces, named and tagged with their projectspace.",
+    "category": "Compositor",
+    "aliases": ["workspaces", "projects", "projectspace"],
+    "allowMultiple": false,
+    "defaultSection": "left"
+  }
+}

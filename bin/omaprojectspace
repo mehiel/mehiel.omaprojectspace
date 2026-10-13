@@ -1,0 +1,574 @@
+#!/bin/bash
+
+# omaprojectspace — attach Hyprland workspaces to projectspaces.
+#
+# A projectspace is a folder (by default one level under ~/Projects) with a
+# mise config at its root. Its mise env — browser, Claude config dir, herdr
+# session, tools — is what everything launched on an attached workspace gets.
+# The filesystem defines projectspaces; the only state kept here is which
+# workspace is attached to which folder.
+
+set -euo pipefail
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+REPO=$(dirname "$(dirname "$SELF")")
+
+CONFIG_DIR=${OMAPROJECTSPACE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omaprojectspace}
+ATTACHMENTS=$CONFIG_DIR/attachments.json
+ROOTS=${OMAPROJECTSPACE_ROOTS:-$HOME/Projects}
+REAL_UWSM_APP=${OMAPROJECTSPACE_REAL_UWSM_APP:-/usr/bin/uwsm-app}
+MISE=${OMAPROJECTSPACE_MISE:-mise}
+
+# Session plumbing started through uwsm-app at login. Workspace 1 is active
+# then and may well be attached; none of these should carry a team's env.
+PASSTHROUGH="hyprsunset udiskie omarchy-hyprland-monitor-watch quickshell omarchy-launch-shell uwsm ${OMAPROJECTSPACE_PASSTHROUGH:-}"
+
+# Env keys that describe the projectspace itself rather than configure tools.
+# They never show up as "what this projectspace sets".
+META_KEYS='["PROJECTSPACE","PROJECTSPACE_HOME","PROJECTSPACE_COLOR","PROJECTSPACE_ICON","PATH","MANPATH"]'
+
+die() { echo "omaprojectspace: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: omaprojectspace <command> [args]
+
+Projectspaces
+  list [--json]                   Projectspaces found under the roots, with attachments
+  status [--ws N] [--json]        The workspace's projectspace (default: the active one)
+  env [--ws N | --name P] [--json]
+                                  The env a launch there gets
+  exec [--ws N | --name P] -- CMD Run CMD with that env, from the projectspace home
+
+Attachments
+  attach <ws> <name|path>         Attach workspace <ws> (1-10) to a projectspace
+  detach <ws>                     Detach workspace <ws>
+
+Session
+  launch -- <uwsm-app args>       Used by the uwsm-app shim: launch with the active
+                                  workspace's projectspace env
+  browser [url...]                Open the projectspace's $BROWSER, else the default browser
+  install | uninstall             Link the plugin, CLI, shim and Hyprland binds into place
+  doctor                          Check the installation and every projectspace
+
+Environment
+  OMAPROJECTSPACE_ROOTS           Colon-separated folders to scan (default ~/Projects)
+  OMAPROJECTSPACE=off             Make the shim a plain uwsm-app
+  OMAPROJECTSPACE_WORKSPACE=N     Treat N as the active workspace
+  OMAPROJECTSPACE_PASSTHROUGH     Extra commands the shim never touches
+EOF
+}
+
+# ---------------------------------------------------------------- helpers
+
+has_mise_config() {
+  local dir=$1 f
+  for f in mise.toml mise.local.toml .mise.toml .mise.local.toml .config/mise.toml .config/mise/config.toml mise/config.toml; do
+    [[ -f $dir/$f ]] && { echo "$dir/$f"; return 0; }
+  done
+  return 1
+}
+
+# ~/x → /home/me/x, and the reverse for storage, so the file survives a
+# different home directory.
+# shellcheck disable=SC2088  # a literal ~ is exactly what is being matched
+expand_home() { local p=$1; [[ $p == "~" || $p == "~/"* ]] && p=$HOME${p:1}; echo "$p"; }
+contract_home() { local p=$1; [[ $p == "$HOME" || $p == "$HOME/"* ]] && p="~${p#"$HOME"}"; echo "$p"; }
+
+valid_ws() { [[ $1 =~ ^([1-9]|10)$ ]]; }
+
+active_workspace() {
+  if [[ -n ${OMAPROJECTSPACE_WORKSPACE:-} ]]; then
+    echo "$OMAPROJECTSPACE_WORKSPACE"
+    return
+  fi
+  hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // empty'
+}
+
+attachments_json() {
+  if [[ -s $ATTACHMENTS ]]; then
+    jq -c '.workspaces // {}' "$ATTACHMENTS" 2>/dev/null || echo '{}'
+  else
+    echo '{}'
+  fi
+}
+
+# Attachments with ~ expanded, so homes compare as plain strings.
+attachments_expanded() {
+  attachments_json | jq -c --arg h "$HOME" 'map_values(if startswith("~") then $h + .[1:] else . end)'
+}
+
+# The home attached to a workspace, expanded, or nothing.
+attached_home() {
+  local ws=$1 home
+  home=$(attachments_json | jq -r --arg ws "$ws" '.[$ws] // empty')
+  [[ -n $home ]] && expand_home "$home"
+  return 0
+}
+
+# Written under a lock and swapped in whole: the bar widget and a terminal can
+# both be attaching at once.
+write_attachments() {
+  local filter=$1; shift
+  mkdir -p "$CONFIG_DIR"
+  (
+    flock 9
+    local current tmp
+    current=$(attachments_json)
+    tmp=$(mktemp "$ATTACHMENTS.XXXXXX")
+    jq -n --argjson ws "$current" "$@" "{version: 1, workspaces: (\$ws | $filter)}" >"$tmp"
+    mv "$tmp" "$ATTACHMENTS"
+  ) 9>"$CONFIG_DIR/.lock"
+  # Live bars pick the change up through their file watch too; this is the
+  # fast path.
+  omarchy-shell -q mehiel.omaprojectspace refresh >/dev/null 2>&1 || true
+}
+
+# Every projectspace home under the roots, one per line.
+discover() {
+  local root dir
+  IFS=: read -ra roots <<<"$ROOTS"
+  for root in "${roots[@]}"; do
+    root=$(expand_home "$root")
+    [[ -d $root ]] || continue
+    for dir in "$root"/*/; do
+      dir=${dir%/}
+      has_mise_config "$dir" >/dev/null && echo "$dir"
+    done
+  done
+  # Attached folders count even when they sit outside every root.
+  attachments_json | jq -r '.[]' | while read -r home; do
+    home=$(expand_home "$home")
+    [[ -d $home ]] && echo "$home"
+  done
+  return 0
+}
+
+# A name or a path → a projectspace home.
+resolve() {
+  local want=$1 home
+  if [[ $want == */* || $want == "~"* || $want == . ]]; then
+    home=$(readlink -f "$(expand_home "$want")" 2>/dev/null) || die "no such folder: $want"
+    [[ -d $home ]] || die "no such folder: $want"
+    has_mise_config "$home" >/dev/null || die "$home has no mise config, so it is not a projectspace"
+    echo "$home"
+    return
+  fi
+  while read -r home; do
+    if [[ $(basename "$home") == "$want" ]]; then echo "$home"; return; fi
+  done < <(discover | sort -u)
+  die "no projectspace named '$want' (see: omaprojectspace list)"
+}
+
+# The full env mise gives a launch from <home>, as JSON. On failure prints
+# mise's first error line to stderr and returns 1.
+mise_env_json() {
+  local home=$1 out err
+  err=$(mktemp)
+  if out=$(cd "$home" && "$MISE" env --json 2>"$err"); then
+    rm -f "$err"
+    echo "$out"
+  else
+    # mise leads with "error parsing config file"; the line that says why
+    # (an untrusted config, a TOML error) is the useful one.
+    local lines
+    lines=$(sed 's/\x1b\[[0-9;]*m//g; s/^mise ERROR //' "$err" | grep -v '^\s*$' | grep -vE '^(Version:|Run with|error parsing config file)' || true)
+    { grep -m1 -i 'not trusted' <<<"$lines" || head -1 <<<"$lines"; } >&2
+    rm -f "$err"
+    return 1
+  fi
+}
+
+# Everything a launch sees: mise's env, then our own markers.
+projectspace_env_json() {
+  local home=$1 env
+  env=$(mise_env_json "$home") || return 1
+  jq -c --arg home "$home" --arg name "$(basename "$home")" \
+    '. + {PROJECTSPACE: (.PROJECTSPACE // $name), PROJECTSPACE_HOME: $home}' <<<"$env"
+}
+
+# One projectspace as JSON for list/status: identity, attachments, look, and
+# the env it sets on top of what $HOME already gets.
+describe() {
+  local home=$1 base_env=$2 attachments=$3 env error="" config
+  config=$(has_mise_config "$home" || true)
+  if ! env=$(projectspace_env_json "$home" 2>"$CONFIG_DIR/.err.$$"); then
+    error=$(cat "$CONFIG_DIR/.err.$$")
+    env='{}'
+  fi
+  rm -f "$CONFIG_DIR/.err.$$"
+  jq -nc \
+    --arg home "$home" --arg config "$config" --arg error "$error" \
+    --argjson env "$env" --argjson base "$base_env" --argjson att "$attachments" \
+    --argjson meta "$META_KEYS" --arg tilde "$(contract_home "$home")" '
+    {
+      name: ($env.PROJECTSPACE // ($home | split("/") | last)),
+      folder: ($home | split("/") | last),
+      home: $home,
+      display: $tilde,
+      config: $config,
+      ok: ($error == ""),
+      error: $error,
+      color: ($env.PROJECTSPACE_COLOR // ""),
+      icon: ($env.PROJECTSPACE_ICON // ""),
+      browser: ($env.BROWSER // ""),
+      workspaces: [ $att | to_entries[] | select(.value == $home) | .key | tonumber ] | sort,
+      env: ($env | with_entries(select(
+        (.key as $k | $meta | index($k) | not) and ($base[.key] != .value)
+      )) | to_entries | sort_by(.key) | from_entries)
+    }'
+}
+
+list_json() {
+  mkdir -p "$CONFIG_DIR"
+  local attachments base home
+  attachments=$(attachments_expanded)
+  base=$(mise_env_json "$HOME" 2>/dev/null || echo '{}')
+  {
+    while read -r home; do
+      describe "$home" "$base" "$attachments"
+    done < <(discover | sort -u)
+  } | jq -sc --argjson att "$attachments" '
+    sort_by(.name | ascii_downcase) as $ps
+    | {
+        projectspaces: $ps,
+        attachments: ($att | with_entries(.value as $h | .value = {
+          home: $h,
+          name: ([$ps[] | select(.home == $h) | .name][0] // null),
+          missing: ([$ps[] | select(.home == $h)] | length == 0)
+        }))
+      }'
+}
+
+# ------------------------------------------------------------- commands
+
+cmd_list() {
+  local json=false
+  [[ ${1:-} == --json ]] && json=true
+  local data
+  data=$(list_json)
+  if $json; then echo "$data"; return; fi
+  jq -r '
+    .projectspaces[] |
+    "\(.name)\t\(.display)\t\(if (.workspaces|length) > 0 then "ws " + (.workspaces | map(tostring) | join(",")) else "-" end)\t\(if .ok then "" else "! " + .error end)"
+  ' <<<"$data" | column -t -s $'\t'
+}
+
+parse_target() {
+  # Sets TARGET_WS / TARGET_HOME from --ws N / --name P, defaulting to the
+  # active workspace. Leaves the remaining args in REST.
+  TARGET_WS="" TARGET_HOME="" REST=()
+  while (($#)); do
+    case $1 in
+    --ws) TARGET_WS=$2; shift 2 ;;
+    --ws=*) TARGET_WS=${1#--ws=}; shift ;;
+    --name) TARGET_HOME=$(resolve "$2"); shift 2 ;;
+    --name=*) TARGET_HOME=$(resolve "${1#--name=}"); shift ;;
+    *) REST+=("$1"); shift ;;
+    esac
+  done
+  if [[ -z $TARGET_HOME ]]; then
+    [[ -n $TARGET_WS ]] || TARGET_WS=$(active_workspace)
+    [[ -n $TARGET_WS ]] && TARGET_HOME=$(attached_home "$TARGET_WS")
+  fi
+  return 0
+}
+
+cmd_status() {
+  parse_target "$@"
+  local json=false
+  [[ ${REST[0]:-} == --json ]] && json=true
+  if [[ -z $TARGET_HOME ]]; then
+    if $json; then jq -nc --arg ws "$TARGET_WS" '{workspace: ($ws | tonumber? // null), projectspace: null}'
+    else echo "workspace ${TARGET_WS:-?}: no projectspace"; fi
+    return
+  fi
+  local base desc
+  base=$(mise_env_json "$HOME" 2>/dev/null || echo '{}')
+  desc=$(describe "$TARGET_HOME" "$base" "$(attachments_expanded)")
+  if $json; then
+    jq -c --arg ws "$TARGET_WS" '{workspace: ($ws | tonumber? // null), projectspace: .}' <<<"$desc"
+  else
+    # Paths read as ~/..., like everywhere else the CLI prints them.
+    jq -r --arg ws "${TARGET_WS:-?}" --arg home "$HOME" '
+      def tilde: if startswith($home + "/") or . == $home then "~" + .[($home | length):] else . end;
+      "workspace \($ws): \(.name)  \(.display)",
+      (if .ok then empty else "  ! " + .error end),
+      (.env | to_entries[] | "  \(.key)=\(.value | tilde)")
+    ' <<<"$desc"
+  fi
+}
+
+cmd_env() {
+  parse_target "$@"
+  [[ -n $TARGET_HOME ]] || die "workspace ${TARGET_WS:-?} has no projectspace"
+  local env
+  env=$(projectspace_env_json "$TARGET_HOME") || die "mise could not load $TARGET_HOME"
+  if [[ ${REST[0]:-} == --json ]]; then echo "$env"
+  else jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$env"; fi
+}
+
+# Exports an env (as JSON) into this process.
+export_env_json() {
+  local pair
+  while IFS= read -r -d '' pair; do
+    export "${pair?}"
+  done < <(jq -j 'to_entries[] | select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) | "\(.key)=\(.value)\u0000"' <<<"$1")
+}
+
+# Exports a projectspace env into this process and moves into its home.
+apply_env() {
+  local home=$1 env
+  env=$(projectspace_env_json "$home") || return 1
+  export_env_json "$env"
+  cd "$home"
+}
+
+cmd_exec() {
+  parse_target "$@"
+  set -- "${REST[@]}"
+  [[ ${1:-} == -- ]] && shift
+  (($#)) || die "exec needs a command: omaprojectspace exec [--ws N] -- cmd"
+  if [[ -n $TARGET_HOME ]]; then
+    apply_env "$TARGET_HOME" || die "mise could not load $TARGET_HOME"
+  fi
+  exec "$@"
+}
+
+# shellcheck disable=SC2016  # jq filters, expanded by jq
+cmd_attach() {
+  (($# == 2)) || die "usage: omaprojectspace attach <ws> <name|path>"
+  valid_ws "$1" || die "workspace must be 1-10, got '$1'"
+  local home
+  home=$(resolve "$2")
+  write_attachments '.[$k] = $v' --arg k "$1" --arg v "$(contract_home "$home")"
+  echo "workspace $1 → $(basename "$home") ($(contract_home "$home"))"
+}
+
+# shellcheck disable=SC2016
+cmd_detach() {
+  (($# == 1)) || die "usage: omaprojectspace detach <ws>"
+  valid_ws "$1" || die "workspace must be 1-10, got '$1'"
+  write_attachments 'del(.[$k])' --arg k "$1"
+  echo "workspace $1 detached"
+}
+
+notify() {
+  command -v notify-send >/dev/null && notify-send -a Projectspaces -u normal "$@" >/dev/null 2>&1 || true
+}
+
+# The uwsm-app shim lands here. Whatever happens, the app launches: any
+# failure to load the projectspace falls back to a plain uwsm-app.
+cmd_launch() {
+  [[ ${1:-} == -- ]] && shift
+  local args=("$@")
+
+  # Anything below that fails under set -e exits through here, so the app
+  # still starts, plainly. A successful exec replaces the process and this
+  # never runs.
+  LAUNCH_ARGS=("$@")
+  trap 'trap - EXIT; exec "$REAL_UWSM_APP" "${LAUNCH_ARGS[@]}"' EXIT
+
+  [[ ${OMAPROJECTSPACE:-} == off ]] && exec "$REAL_UWSM_APP" "${args[@]}"
+
+  # Find the command after uwsm-app's own options. No command (stop, ping,
+  # help) means this is not an app launch.
+  local i=0 cmd=""
+  while ((i < ${#args[@]})); do
+    case ${args[i]} in
+    --) cmd=${args[i + 1]:-}; break ;;
+    -[stauSdp]) i=$((i + 2)) ;;
+    -T | -h | --help) i=$((i + 1)) ;;
+    -*) i=$((i + 1)) ;;
+    *) cmd=${args[i]}; break ;;
+    esac
+  done
+  [[ -n $cmd && $cmd != stop && $cmd != ping ]] || exec "$REAL_UWSM_APP" "${args[@]}"
+
+  local name=${cmd##*/}
+  local skip
+  for skip in $PASSTHROUGH; do
+    [[ $name == "$skip" ]] && exec "$REAL_UWSM_APP" "${args[@]}"
+  done
+
+  local ws home
+  ws=$(active_workspace || true)
+  home=""
+  [[ -n $ws ]] && home=$(attached_home "$ws")
+
+  # A launch from an unattached workspace never inherits a projectspace the
+  # caller happened to carry.
+  if [[ -z $home ]]; then
+    exec env -u PROJECTSPACE -u PROJECTSPACE_HOME "$REAL_UWSM_APP" "${args[@]}"
+  fi
+
+  if [[ ! -d $home ]]; then
+    notify "Projectspace missing" "Workspace $ws is attached to $(contract_home "$home"), which no longer exists."
+    exec "$REAL_UWSM_APP" "${args[@]}"
+  fi
+
+  local env err
+  err=$(mktemp)
+  if ! env=$(projectspace_env_json "$home" 2>"$err"); then
+    notify "Projectspace env not loaded" "$(basename "$home"): $(cat "$err"). Launched without it."
+    rm -f "$err"
+    exec "$REAL_UWSM_APP" "${args[@]}"
+  fi
+  rm -f "$err"
+  export_env_json "$env"
+  cd "$home"
+
+  # Terminals: omarchy-launch-terminal passes the focused terminal's cwd, or
+  # $HOME when there is none. Only that fallback moves to the projectspace.
+  for i in "${!args[@]}"; do
+    if [[ ${args[i]} == "--dir=$HOME" || ${args[i]} == "--dir=$HOME/" ]]; then
+      args[i]="--dir=$home"
+    elif [[ ${args[i]} == --dir && ${args[i + 1]:-} == "$HOME" ]]; then
+      args[i + 1]=$home
+    fi
+  done
+
+  exec "$REAL_UWSM_APP" "${args[@]}"
+}
+
+# The projectspace's own browser when it sets one, the desktop default
+# otherwise. For keybinds: omarchy-launch-browser hands URLs to an already
+# running Chrome directly, so it never reaches the shim.
+cmd_browser() {
+  local ws home browser=""
+  ws=$(active_workspace || true)
+  home=""
+  [[ -n $ws ]] && home=$(attached_home "$ws")
+  if [[ -n $home && -d $home ]]; then
+    browser=$(projectspace_env_json "$home" 2>/dev/null | jq -r '.BROWSER // empty') || browser=""
+  fi
+  if [[ -z $browser ]]; then
+    exec omarchy-launch-browser "$@"
+  fi
+  exec "$REAL_UWSM_APP" -- "$SELF" exec --ws "$ws" -- "$browser" "$@"
+}
+
+LINKS=(
+  "$HOME/.config/omarchy/plugins/mehiel.omaprojectspace|$REPO"
+  "$HOME/.local/bin/omaprojectspace|$REPO/bin/omaprojectspace"
+  "$HOME/.local/bin/uwsm-app|$REPO/shim/uwsm-app"
+  "$HOME/.config/hypr/omaprojectspace.lua|$REPO/hypr/omaprojectspace.lua"
+)
+
+cmd_install() {
+  local pair link target
+  for pair in "${LINKS[@]}"; do
+    link=${pair%%|*} target=${pair#*|}
+    # `omarchy plugin add` clones the repo straight into the plugin folder.
+    if [[ -e $link && $(readlink -f "$link") == "$(readlink -f "$target")" ]]; then
+      echo "ok    $(contract_home "$link")"
+      continue
+    fi
+    if [[ -e $link && ! -L $link ]]; then
+      echo "skip  $link (a real file is in the way)"
+      continue
+    fi
+    mkdir -p "$(dirname "$link")"
+    ln -sfn "$target" "$link"
+    echo "link  $(contract_home "$link") → $(contract_home "$target")"
+  done
+  local hyprland=$HOME/.config/hypr/hyprland.lua
+  if [[ -f $hyprland ]] && ! grep -q 'require("hypr.omaprojectspace")' "$hyprland"; then
+    printf '\n-- Projectspaces: workspace ↔ team folder binds (mehiel.omaprojectspace).\nrequire("hypr.omaprojectspace")\n' >>"$hyprland"
+    echo "added require(\"hypr.omaprojectspace\") to $(contract_home "$hyprland")"
+  fi
+  omarchy-shell -q shell rescanPlugins || true
+  hyprctl reload >/dev/null 2>&1 || true
+  echo "done. Put the widget on the bar with: omarchy bar put mehiel.omaprojectspace"
+}
+
+cmd_uninstall() {
+  local pair link target
+  for pair in "${LINKS[@]}"; do
+    link=${pair%%|*} target=${pair#*|}
+    if [[ -L $link && $(readlink "$link") == "$target" ]]; then
+      rm "$link"
+      echo "unlink $(contract_home "$link")"
+    fi
+  done
+  local hyprland=$HOME/.config/hypr/hyprland.lua
+  if [[ -f $hyprland ]] && grep -q 'require("hypr.omaprojectspace")' "$hyprland"; then
+    sed -i '/^-- Projectspaces: workspace ↔ team folder binds/d; /^require("hypr.omaprojectspace")$/d' "$hyprland"
+    echo "removed require(\"hypr.omaprojectspace\") from $(contract_home "$hyprland")"
+  fi
+  hyprctl reload >/dev/null 2>&1 || true
+}
+
+cmd_doctor() {
+  local bad=0
+  local green="" yellow="" reset=""
+  if [[ -t 1 ]]; then green=$'\e[32m' yellow=$'\e[33m' reset=$'\e[0m'; fi
+  ok() { printf '  %s✓%s %s\n' "$green" "$reset" "$*"; }
+  warn() { printf '  %s!%s %s\n' "$yellow" "$reset" "$*"; bad=1; }
+
+  echo "Install"
+  local pair link target
+  for pair in "${LINKS[@]}"; do
+    link=${pair%%|*} target=${pair#*|}
+    if [[ -e $link && $(readlink -f "$link") == "$(readlink -f "$target")" ]]; then ok "$(contract_home "$link")"
+    else warn "$(contract_home "$link") is not linked (run: omaprojectspace install)"; fi
+  done
+
+  echo "Session"
+  local proc pid path resolved
+  for proc in Hyprland quickshell; do
+    pid=$(pgrep -x "$proc" | head -1 || true)
+    if [[ -z $pid ]]; then warn "$proc is not running"; continue; fi
+    path=$(tr '\0' '\n' <"/proc/$pid/environ" | sed -n 's/^PATH=//p')
+    resolved=$(PATH=$path command -v uwsm-app || true)
+    if [[ $(readlink -f "$resolved") == "$(readlink -f "$REPO/shim/uwsm-app")" ]]; then ok "$proc launches through the shim"
+    else warn "$proc resolves uwsm-app to $resolved, not the shim"; fi
+    # The shell launches apps through `bash -lc`, which rebuilds PATH from the
+    # login profile; the shim has to win there too.
+    if [[ $proc == quickshell ]]; then
+      resolved=$(env -i HOME="$HOME" USER="${USER:-}" PATH="$path" bash -lc 'command -v uwsm-app' 2>/dev/null || true)
+      if [[ $(readlink -f "$resolved") == "$(readlink -f "$REPO/shim/uwsm-app")" ]]; then ok "quickshell's login-shell launches go through the shim"
+      else warn "a login shell resolves uwsm-app to $resolved; put ~/.local/bin before /usr/bin in your profile"; fi
+    fi
+    if tr '\0' '\n' <"/proc/$pid/environ" | grep -q '^PROJECTSPACE='; then
+      warn "$proc carries a PROJECTSPACE env (restarted from a projectspace terminal?); restart it from a plain one"
+    fi
+  done
+
+  echo "Projectspaces"
+  local data
+  data=$(list_json)
+  # \x1f, not a tab: read collapses runs of whitespace separators, and an
+  # empty error field would shift every column after it.
+  while IFS=$'\x1f' read -r name display ok error ws; do
+    if [[ $ok == true ]]; then ok "$name  $display${ws:+  (ws $ws)}"
+    else warn "$name  $display: $error"; fi
+  done < <(jq -r '.projectspaces[] | [.name, .display, (.ok|tostring), .error, (.workspaces | map(tostring) | join(","))] | join("\u001f")' <<<"$data")
+  while IFS=$'\x1f' read -r ws home; do
+    warn "workspace $ws is attached to $home, which is not a projectspace any more"
+  done < <(jq -r '.attachments | to_entries[] | select(.value.missing) | [.key, .value.home] | join("\u001f")' <<<"$data")
+
+  return $bad
+}
+
+main() {
+  local cmd=${1:-help}
+  (($#)) && shift
+  case $cmd in
+  list | ls) cmd_list "$@" ;;
+  status) cmd_status "$@" ;;
+  env) cmd_env "$@" ;;
+  exec) cmd_exec "$@" ;;
+  attach) cmd_attach "$@" ;;
+  detach) cmd_detach "$@" ;;
+  launch) cmd_launch "$@" ;;
+  browser) cmd_browser "$@" ;;
+  install) cmd_install "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  help | -h | --help) usage ;;
+  *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

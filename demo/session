@@ -1,0 +1,138 @@
+#!/bin/bash
+# demo/session <demo-home> [start|stop|env]
+# A nested Hyprland running Omarchy on the demo home, in a fullscreen window on
+# DEMO_MONITOR (default: the laptop panel, eDP-1) of the running session. It
+# has its own D-Bus session and its own copy of the Omarchy shell, so nothing
+# in it reaches the real session's shell, notifications or tray.
+#
+#   start  launch it and wait for its shell (default)
+#   env    print the env that talks to it: eval "$(demo/session <home> env)"
+#   stop   end it
+
+# shellcheck disable=SC2012,SC1090  # hypr instance dirs are hex; the state file is ours
+set -euo pipefail
+
+DEMO=$(cd "${1:?usage: demo/session <demo-home> [start|stop|env]}" && pwd)
+ACTION=${2:-start}
+MONITOR=${DEMO_MONITOR:-eDP-1}
+STATE=$DEMO/.session
+OUTER_WAYLAND=${WAYLAND_DISPLAY:?run from inside a Wayland session}
+
+session_env() {
+  [[ -f $STATE ]] || { echo "no demo session (start it first)" >&2; exit 1; }
+  cat "$STATE"
+}
+
+case $ACTION in
+env)
+  session_env
+  exit 0
+  ;;
+stop)
+  if [[ -f $STATE ]]; then
+    # shellcheck disable=SC1090
+    source <(session_env)
+    hyprctl dispatch 'hl.dsp.exit()' >/dev/null 2>&1 || true
+    rm -f "$STATE"
+  fi
+  if [[ -f $DEMO/.intranet.pid ]]; then
+    kill "$(cat "$DEMO/.intranet.pid")" 2>/dev/null || true
+    rm -f "$DEMO/.intranet.pid"
+  fi
+  exit 0
+  ;;
+start) ;;
+*) echo "unknown action: $ACTION" >&2; exit 2 ;;
+esac
+
+# Quickshell keys an instance by its config path, so the demo needs its own
+# copy of the shell; everything else is the installed Omarchy.
+omarchy=$DEMO/.omarchy
+if [[ ! -d $omarchy ]]; then
+  mkdir -p "$omarchy"
+  for entry in /usr/share/omarchy/*; do
+    if [[ ${entry##*/} == shell ]]; then cp -r "$entry" "$omarchy/shell"
+    else ln -s "$entry" "$omarchy/${entry##*/}"; fi
+  done
+fi
+
+# The nested window opens fullscreen on the demo monitor's workspace without
+# taking focus from wherever you are working.
+workspace=$(hyprctl monitors -j | jq -r --arg m "$MONITOR" '.[] | select(.name == $m) | .activeWorkspace.id')
+[[ -n $workspace ]] || { echo "no monitor $MONITOR" >&2; exit 1; }
+hyprctl eval "hl.window_rule({ match = { class = '^(aquamarine|[Hh]yprland)\$' }, workspace = '$workspace silent', fullscreen = true, no_initial_focus = true })" >/dev/null
+
+before=$(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | sort)
+systemd_before=$(systemctl --user show-environment | sort)
+
+# The teams' intranets, at http://<team>.localhost:4321/.
+python3 "$(dirname "$0")/intranet.py" "$DEMO" 4321 >/dev/null 2>&1 &
+echo $! >"$DEMO/.intranet.pid"
+
+env -i \
+  HOME="$DEMO" USER="${USER:-demo}" LANG="${LANG:-C.UTF-8}" SHELL=/bin/bash \
+  XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" WAYLAND_DISPLAY="$OUTER_WAYLAND" \
+  XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=Hyprland \
+  OMARCHY_PATH="$omarchy" \
+  PATH="$DEMO/.local/bin:$omarchy/bin:/usr/local/bin:/usr/bin" \
+  setsid dbus-run-session -- Hyprland >"$DEMO/.session.log" 2>&1 &
+
+# The new instance's signature, and the Wayland socket it serves.
+signature=""
+for _ in $(seq 1 100); do
+  signature=$(comm -13 <(echo "$before") <(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | sort) | head -1)
+  [[ -n $signature && -S $XDG_RUNTIME_DIR/hypr/$signature/.socket.sock ]] && break
+  sleep 0.1
+done
+[[ -n $signature ]] || { echo "nested Hyprland did not start; see $DEMO/.session.log" >&2; exit 1; }
+
+display=""
+for _ in $(seq 1 50); do
+  display=$(HYPRLAND_INSTANCE_SIGNATURE=$signature hyprctl -j instances 2>/dev/null |
+    jq -r --arg s "$signature" '.[] | select(.instance == $s) | .wl_socket' || true)
+  [[ -n $display ]] && break
+  sleep 0.1
+done
+
+# The window rule's fullscreen does not stick to a nested compositor's
+# window; fullscreen it by address, which leaves focus alone too.
+address=""
+for _ in $(seq 1 50); do
+  address=$(hyprctl clients -j | jq -r --argjson ws "$workspace" '.[] | select(.class == "aquamarine" and .workspace.id == $ws) | .address' | tail -1)
+  [[ -n $address ]] && break
+  sleep 0.1
+done
+[[ -n $address ]] && hyprctl dispatch "hl.dsp.window.fullscreen({ mode = \"fullscreen\", window = \"address:$address\" })" >/dev/null
+
+cat >"$STATE" <<EOF
+export HOME='$DEMO'
+export HYPRLAND_INSTANCE_SIGNATURE='$signature'
+export WAYLAND_DISPLAY='$display'
+export OMARCHY_PATH='$omarchy'
+export PATH='$DEMO/.local/bin:$omarchy/bin:/usr/local/bin:/usr/bin'
+unset XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME
+EOF
+
+# The demo must leave the real session's systemd env alone (see setup). If it
+# did not, stop it and say so rather than carry on.
+check_systemd_env() {
+  if [[ $(systemctl --user show-environment | sort) != "$systemd_before" ]]; then
+    echo "the demo changed the systemd user environment; stopping it" >&2
+    diff <(echo "$systemd_before") <(systemctl --user show-environment | sort) | head -20 >&2
+    "$0" "$DEMO" stop
+    exit 1
+  fi
+}
+
+# Ready once the demo's own shell answers.
+for _ in $(seq 1 150); do
+  if (source "$STATE"; omarchy-shell shell ping >/dev/null 2>&1); then
+    sleep 3
+    check_systemd_env
+    echo "demo session up: $signature on $display"
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "nested Hyprland is up but its shell is not answering; see $DEMO/.session.log" >&2
+exit 1

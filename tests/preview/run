@@ -1,0 +1,34 @@
+#!/bin/bash
+# tests/preview/run [cursor-ws] [out.png]
+# Shows the preview for a moment on a monitor you are not focused on, and
+# screenshots it. PREVIEW_SCRIPT and OMAPROJECTSPACE_* env pass through.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+out=${2:-/tmp/omaprojectspace-preview.png}
+# Quickshell resolves a QML file's sibling types only inside folders it scanned
+# at startup, so the plugin is copied under the harness's own config folder.
+rm -rf "$here/plugin"
+mkdir -p "$here/plugin"
+cp "$repo"/*.qml "$repo"/*.js "$repo/manifest.json" "$here/plugin/"
+ln -s "$repo/bin" "$here/plugin/bin"
+# Shown on a monitor you are not using, so it never covers your work.
+screen=${PREVIEW_SCREEN:-$(hyprctl monitors -j | jq -r '([.[] | select(.focused | not)] + .)[0].name')}
+settings=$(jq -c '[.bar.layout[][] | select(.id == "mehiel.omaprojectspace")][0] // {}' ~/.config/omarchy/shell.json)
+PREVIEW_SCREEN=$screen PREVIEW_REPO=$here/plugin PREVIEW_CURSOR=${1:-7} PREVIEW_SETTINGS=$settings \
+  quickshell -p "$here" >"$here/.log" 2>&1 &
+pid=$!
+sleep "${PREVIEW_WAIT:-3}"
+geometry=$(hyprctl layers -j | jq -r --arg s "$screen" '.[$s].levels[]?[]? | select(.namespace == "omaprojectspace-preview") | "\(.x),\(.y) \(.w)x\(.h)"' | head -1)
+if [[ -n $geometry ]]; then
+  # Layer coordinates are monitor-local; grim wants layout coordinates.
+  read -r mx my < <(hyprctl monitors -j | jq -r --arg s "$screen" '.[] | select(.name == $s) | "\(.x) \(.y)"')
+  IFS=', x' read -r x y w h <<<"$geometry"
+  grim -g "$((mx + x)),$((my + y)) ${w}x${h}" "$out"
+else
+  grim -o "$screen" "$out"
+fi
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+grep -iE "error|warn.*(BarWidget|PanelContent|WorkspaceRow|AttachChip|ProjectspaceDot|Model)" "$here/.log" | grep -v "outside of the config folder" | head -20 || true
+echo "$out"
