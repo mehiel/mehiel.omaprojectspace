@@ -101,6 +101,7 @@
   .step-n { font: 600 13px var(--mono); color: var(--text-dim); }
   .card h3 { margin: 8px 0 8px; color: var(--text-strong); font-size: 19px; letter-spacing: -0.01em; }
   .card p { margin: 0 0 16px; color: var(--text); font-size: 15.5px; }
+  .card p.note { margin: 12px 0 0; color: var(--text-dim); font-size: 14px; }
   pre { margin: 0; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
         font-size: 13px; line-height: 1.6; overflow-x: auto; color: var(--text); }
   .k { color: #bb9af7; } .s { color: #9ece6a; } .c { color: #565f89; } .h { color: #7dcfff; }
@@ -182,19 +183,22 @@
       <div class="card">
         <div class="step-n">01</div>
         <h3>A folder with a mise config</h3>
-        <p>Any folder under <code>~/Projects</code> with a <code>mise.toml</code> is a projectspace. Projects inside it inherit it.</p>
-<pre><span class="c"># ~/Projects/acme/mise.toml</span>
+        <p>Any folder under <code>~/Projects</code> with a mise config is a projectspace. Use <code>mise.local.toml</code> to keep it personal. Projects inside it inherit it.</p>
+<pre><span class="c"># ~/Projects/acme/mise.local.toml</span>
 <span class="h">[env]</span>
 CLAUDE_CONFIG_DIR = <span class="s">"~/.claude.acme"</span>
 HERDR_SESSION     = <span class="s">"acme"</span>
 AWS_PROFILE       = <span class="s">"acme-dev"</span>
 BROWSER           = <span class="s">"~/.local/bin/chrome-acme"</span>
-PROJECTSPACE_COLOR = <span class="s">"#E8913A"</span></pre>
+
+<span class="h">[tools]</span>
+java = <span class="s">"21"</span></pre>
+        <p class="note">Optional: <code>PROJECTSPACE_COLOR</code> and <code>PROJECTSPACE_ICON</code> override the automatic dot.</p>
       </div>
       <div class="card">
         <div class="step-n">02</div>
         <h3>Attach a workspace</h3>
-        <p>From the bar's panel (<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>P</kbd>, then <kbd>←</kbd> <kbd>→</kbd>) or the CLI. The bar marks it with the team's color.</p>
+        <p>From the bar's panel (<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>P</kbd>, then <kbd>←</kbd> <kbd>→</kbd>) or the CLI. The bar marks it with the team's color. Only the workspaces you attach change; the rest stay stock.</p>
 <pre><span class="k">$</span> omaprojectspace attach 1 acme
 workspace 1 → acme (~/Projects/acme)
 <span class="k">$</span> omaprojectspace list
@@ -258,7 +262,7 @@ workspace 1: Acme  ~/Projects/acme
       <div class="card feature"><div class="icon">⌨</div><h3>A keyboard panel</h3>
         <p>Pick a row, cycle its projectspace with <kbd>←</kbd> <kbd>→</kbd>, rename with <kbd>e</kbd>, open a team terminal with <kbd>t</kbd>.</p></div>
       <div class="card feature"><div class="icon">◐</div><h3>A browser per team</h3>
-        <p>Set <code>BROWSER</code> in mise and the browser keybind opens that team's Chrome profile.</p></div>
+        <p>Set <code>BROWSER</code> in mise and anything that opens a URL uses that team's Chrome profile: the browser key, <code>aws sso login</code>, <code>gh --web</code>. Teams can share a profile.</p></div>
       <div class="card feature"><div class="icon">❯</div><h3>Terminals open in the folder</h3>
         <p>A new terminal starts in the team folder. One opened from another terminal keeps that terminal's folder.</p></div>
       <div class="card feature"><div class="icon">✓</div><h3>Fails open</h3>
@@ -276,7 +280,7 @@ workspace 1: Acme  ~/Projects/acme
         <figure><img src="media/teams.jpg" alt="Workspace 2, Globex: a terminal in ~/Projects/globex showing Globex's env, next to Chrome in the Globex profile on the Globex intranet." loading="lazy">
           <figcaption>Workspace 2 is Globex: the terminal starts in its folder with its env, and the browser is its own Chrome profile.</figcaption></figure>
         <figure><img src="media/config.png" alt="A terminal showing the Initech mise.toml and omaprojectspace list." loading="lazy">
-          <figcaption>A projectspace is just its <code>mise.toml</code>.</figcaption></figure>
+          <figcaption>A projectspace is just its mise config.</figcaption></figure>
         <figure><img src="media/bar.png" alt="The bar strip: a blue dot before Globex, an orange dot before Acme, and the settings gear." loading="lazy">
           <figcaption>Hover the strip to see this monitor's other workspaces.</figcaption></figure>
       </div>
