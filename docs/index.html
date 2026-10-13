@@ -93,6 +93,9 @@
   h2 { font-size: clamp(30px, 4vw, 42px); letter-spacing: -0.03em; line-height: 1.15; margin: 10px 0 14px; color: var(--text-strong); }
   .sub { color: var(--text-dim); max-width: 700px; margin: 0; }
 
+  /* Grid children with <pre> inside would otherwise refuse to shrink below
+     their content and push the page sideways on a phone. */
+  .steps > *, .features > *, .gallery > *, .two > * { min-width: 0; }
   .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 40px; }
   .card { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
   .step-n { font: 600 13px var(--mono); color: var(--text-dim); }
@@ -121,7 +124,7 @@
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 40px; }
   table { width: 100%; border-collapse: collapse; font-size: 15px; }
   td { padding: 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  td:first-child { width: 42%; padding-right: 12px; }
+  td:first-child { width: 48%; padding-right: 12px; white-space: nowrap; }
   kbd { font-size: 12.5px; background: var(--bg-sunk); border: 1px solid var(--line); border-bottom-width: 2px;
         border-radius: 6px; padding: 1px 7px; color: var(--text-strong); white-space: nowrap; }
 
@@ -284,7 +287,7 @@ workspace 1: Acme  ~/Projects/acme
 
   <section id="install">
     <div class="eyebrow">Install</div>
-    <h2>Two commands.</h2>
+    <h2>Up and running in a minute.</h2>
     <div class="two">
       <div class="card">
         <h3>1 · Add the plugin, then link the shim</h3>
