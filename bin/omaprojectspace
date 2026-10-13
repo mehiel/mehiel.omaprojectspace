@@ -504,7 +504,7 @@ cmd_uninstall() {
 session_pid() {
   local pid sig=${HYPRLAND_INSTANCE_SIGNATURE:-}
   for pid in $(pgrep -x "$1"); do
-    if [[ -z $sig ]] || tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HYPRLAND_INSTANCE_SIGNATURE=$sig"; then
+    if [[ -z $sig ]] || { tr '\0' '\n' <"/proc/$pid/environ"; } 2>/dev/null | grep -qx "HYPRLAND_INSTANCE_SIGNATURE=$sig"; then
       echo "$pid"
       return
     fi
