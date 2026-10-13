@@ -6,6 +6,11 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 out=${2:-/tmp/omaprojectspace-preview.png}
+# The shell's own modules, linked here at run time: Omarchy plugins may not
+# contain symlinks.
+ln -sfn /usr/share/omarchy/shell/Commons "$here/Commons"
+ln -sfn /usr/share/omarchy/shell/Ui "$here/Ui"
+
 # Quickshell resolves a QML file's sibling types only inside folders it scanned
 # at startup, so the plugin is copied under the harness's own config folder.
 rm -rf "$here/plugin"

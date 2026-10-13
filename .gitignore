@@ -1,3 +1,5 @@
 tests/preview/plugin/
 tests/preview/.log
 demo/.build/
+tests/preview/Commons
+tests/preview/Ui
