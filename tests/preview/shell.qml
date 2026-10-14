@@ -21,6 +21,8 @@ ShellRoot {
   readonly property var script: {
     try { return JSON.parse(Quickshell.env("PREVIEW_SCRIPT") || "[]") } catch (e) { return [] }
   }
+  // The real panel caps its card at Style.space(780); PREVIEW_WIDTH narrows it.
+  readonly property int panelWidth: Number(Quickshell.env("PREVIEW_WIDTH")) || Style.space(780)
   readonly property var settings: {
     try { return JSON.parse(Quickshell.env("PREVIEW_SETTINGS") || "{}") } catch (e) { return {} }
   }
@@ -36,7 +38,7 @@ ShellRoot {
     anchors.left: true
     margins.top: 40
     margins.left: 40
-    implicitWidth: 460
+    implicitWidth: shell.panelWidth + 40
     implicitHeight: column.implicitHeight + 40
     color: Commons.Color.popups.background
     WlrLayershell.layer: WlrLayer.Overlay
@@ -69,7 +71,7 @@ ShellRoot {
       id: column
       x: 20
       y: 20
-      width: 420
+      width: shell.panelWidth
       spacing: 20
 
       Rectangle {

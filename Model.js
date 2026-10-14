@@ -265,6 +265,71 @@ function trustCommand(projectspace) {
   return projectspace.config ? "mise trust " + projectspace.config : "mise trust " + projectspace.home
 }
 
+// ---- the last session's windows (omaprojectspace windows --json)
+
+// { saved, workspaces: [{ ws, projectspace, windows, missing }], byWs, missing }.
+// Anything unreadable is an empty session, so the panel simply hides it.
+function parseWindows(text) {
+  var empty = { saved: null, workspaces: [], byWs: {}, missing: 0, current: null, uptime: null }
+  var data
+  try { data = JSON.parse(text || "") } catch (e) { return empty }
+  if (!data || !Array.isArray(data.workspaces)) return empty
+  var c = data.current
+  var out = {
+    saved: data.saved || null, workspaces: [], byWs: {}, missing: 0,
+    current: c && c.saved > 0 ? { saved: c.saved, windows: Number(c.windows) || 0, workspaces: Number(c.workspaces) || 0 } : null,
+    uptime: data.uptime >= 0 ? data.uptime : null
+  }
+  for (var i = 0; i < data.workspaces.length; i++) {
+    var w = data.workspaces[i]
+    if (!w || !(w.ws > 0) || !Array.isArray(w.windows)) continue
+    var entry = { ws: w.ws, projectspace: w.projectspace || null, windows: w.windows, missing: Number(w.missing) || 0 }
+    out.workspaces.push(entry)
+    out.byWs[String(w.ws)] = entry
+    out.missing += entry.missing
+  }
+  return out
+}
+
+function restoreFor(session, id) {
+  return session && session.byWs ? session.byWs[String(id)] || null : null
+}
+
+// "3 to reopen", "all open".
+function restoreSummary(entry) {
+  if (!entry) return ""
+  if (entry.missing === 0) return "all open"
+  return entry.missing + " to reopen"
+}
+
+// When the snapshot was taken, relative to now (both epoch seconds).
+function savedLabel(saved, now) {
+  if (!saved) return ""
+  var minutes = Math.max(0, Math.round((now - saved) / 60))
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return minutes + " min ago"
+  var hours = Math.round(minutes / 60)
+  if (hours < 24) return hours + " h ago"
+  var days = Math.round(hours / 24)
+  return days === 1 ? "yesterday" : days + " days ago"
+}
+
+// Auto-save runs every minute; a snapshot older than this means it stopped.
+var AUTOSAVE_STALE = 180
+
+// The footer's auto-save line: { text, stale }. Without a snapshot yet, a
+// session older than the stale mark means the timer never started.
+function autosaveStatus(session, now) {
+  var c = session ? session.current : null
+  if (!c) {
+    var late = session && session.uptime !== null && session.uptime > AUTOSAVE_STALE
+    return { text: late ? "Auto-save isn't running" : "Auto-save starts within a minute", stale: !!late }
+  }
+  var age = now - c.saved
+  if (age > AUTOSAVE_STALE) return { text: "Auto-save stopped  ·  last " + savedLabel(c.saved, now), stale: true }
+  return { text: "Auto-saved " + windowsLabel(c.windows) + "  ·  " + (age < 60 ? "just now" : savedLabel(c.saved, now)), stale: false }
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     WORKSPACE_IDS: WORKSPACE_IDS,
@@ -289,6 +354,11 @@ if (typeof module !== "undefined") {
     stripIds: stripIds,
     moveCursor: moveCursor,
     workspaceForKey: workspaceForKey,
-    trustCommand: trustCommand
+    trustCommand: trustCommand,
+    parseWindows: parseWindows,
+    restoreFor: restoreFor,
+    restoreSummary: restoreSummary,
+    savedLabel: savedLabel,
+    autosaveStatus: autosaveStatus
   }
 }

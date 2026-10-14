@@ -64,13 +64,46 @@ singleton socket, so it never reaches `uwsm-app`. The browser keybinds call
 `omaprojectspace browser` instead. It runs the projectspace's `$BROWSER` when
 one is set, and falls back to the stock launcher otherwise.
 
+## Restoring windows
+
+`save --auto` runs every minute from a timer in `hypr/omaprojectspace.lua`
+and writes `~/.local/state/omaprojectspace/session.json`. That file records
+how to reopen each window on workspaces 1–10, not the window itself:
+
+- a terminal: its folder, and the argv of a herdr, tmux or zellij it runs;
+- the browser: one per workspace;
+- an app: its desktop entry. Omarchy writes `-Default` into every web app's
+  `StartupWMClass`, while the window's class ends in its real profile, so a
+  web app matches on the URL part and then on the `--profile-directory` in
+  `Exec`.
+
+The snapshot carries the Hyprland instance signature. The first save of a new
+instance moves the old file to `last-session.json`, which is what `restore`
+reads, unless the old one had no windows. An automatic save that sees no
+windows keeps the previous snapshot, because logging out closes every window
+before Hyprland exits.
+
+`restore` opens one window at a time. For each, a temporary window rule
+(`workspace = "N silent"`, `no_initial_focus`) catches the next window of
+that class. The command runs through Hyprland's `exec_cmd` with
+`OMAPROJECTSPACE_WORKSPACE=N`, so it gets the session's env and the shim adds
+workspace N's projectspace. The rule is switched off as soon as the window
+appears, or after 15 seconds. Hyprland's exec rules match by PID, which would
+miss Chrome: a new Chrome window belongs to the Chrome process that is
+already running.
+
+Restoring at login is a widget setting. Every bar instance asks the CLI; the
+CLI acts once per Hyprland instance, and only in its first five minutes.
+
 ## The widget
 
 - `BarWidget.qml`: the strip, data loading and IPC. It extends the shell's
   `Panel`, the base class the first-party popups use.
 - `PanelContent.qml`: the keyboard panel, built from the shell's `qs.Ui` kit
   (`CursorSurface` rows, `PanelHero`, `PanelKeyCatcher`), the same parts the
-  first-party panels use.
+  first-party panels use. Two columns: the workspaces on the left, the
+  selected one's projectspace and last-session windows on the right. Below
+  about 620 px the card stacks them.
 - `Model.js`: pure logic (labels, colors, attachments, the strip, the cursor).
   It runs under QML and node and is tested in `tests/model.test.js`.
 

@@ -19,6 +19,9 @@ CursorSurface {
   readonly property string labelSource: Model.labelSource(wsId, panel.names, panel.spaces)
   readonly property bool active: panel.monitorActiveId === wsId
   readonly property int windows: panel.windowCount(wsId)
+  // Windows the last session had here that are not open now.
+  readonly property var restore: Model.restoreFor(panel.lastSession, wsId)
+  readonly property int reopen: restore ? restore.missing : 0
   readonly property bool editing: panel.editingId === wsId
   readonly property bool picked: panel.cursorId === wsId
   readonly property color fg: panel.fg
@@ -146,6 +149,15 @@ CursorSurface {
       font.bold: true
       elide: Text.ElideRight
       Layout.maximumWidth: Style.space(110)
+    }
+
+    Text {
+      visible: row.reopen > 0 && !row.editing
+      textFormat: Text.PlainText
+      text: "\uf1da " + row.reopen
+      color: row.dim
+      font.family: row.panel.fontFamily
+      font.pixelSize: Style.font.caption
     }
 
     Text {

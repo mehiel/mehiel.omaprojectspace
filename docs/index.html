@@ -265,10 +265,10 @@ workspace 1: Acme  ~/Projects/acme
         <p>Set <code>BROWSER</code> in mise and anything that opens a URL uses that team's Chrome profile: the browser key, <code>aws sso login</code>, <code>gh --web</code>. Teams can share a profile.</p></div>
       <div class="card feature"><div class="icon">❯</div><h3>Terminals open in the folder</h3>
         <p>A new terminal starts in the team folder. One opened from another terminal keeps that terminal's folder.</p></div>
+      <div class="card feature"><div class="icon">↺</div><h3>Windows come back</h3>
+        <p>After a reboot, <kbd>o</kbd> in the panel, or a switch at login, reopens each workspace's terminals, herdr or tmux sessions, browser and web apps, with their team's env.</p></div>
       <div class="card feature"><div class="icon">✓</div><h3>Fails open</h3>
-        <p>Untrusted config, missing folder, any error: the app still launches, plainly, and you get a notification.</p></div>
-      <div class="card feature"><div class="icon">⎋</div><h3>Easy to switch off</h3>
-        <p><code>OMAPROJECTSPACE=off</code> per launch, <code>omaprojectspace doctor</code> to check, <code>uninstall</code> to remove every link.</p></div>
+        <p>Untrusted config, missing folder, any error: the app still launches, plainly, with a notification. <code>omaprojectspace doctor</code> checks it all.</p></div>
     </div>
   </section>
 
@@ -311,6 +311,8 @@ workspace 1: Acme  ~/Projects/acme
           <tr><td><kbd>e</kbd></td><td>rename</td></tr>
           <tr><td><kbd>x</kbd></td><td>clear the projectspace, then the name</td></tr>
           <tr><td><kbd>t</kbd> · <kbd>c</kbd></td><td>team terminal · edit its mise config</td></tr>
+          <tr><td><kbd>o</kbd> · <kbd>O</kbd></td><td>restore last session's windows · on every workspace</td></tr>
+          <tr><td><kbd>s</kbd></td><td>save the windows now (auto-save runs every minute)</td></tr>
         </table>
       </div>
     </div>

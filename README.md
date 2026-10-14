@@ -124,12 +124,42 @@ the monitor you're on.
 | x | clear: the projectspace first, then the custom name |
 | t | open a terminal in its projectspace, with its env |
 | c | edit its projectspace's mise config |
+| o / O | restore the last session's windows on it / on every workspace |
+| s | save the windows now |
 | r | refresh |
 
-Below the list, the selected workspace's projectspace:
+The workspaces are on the left. On the right, the selected one's details:
 - chips to attach a projectspace;
 - what its mise config sets beyond your global config;
-- a **Trust** button when mise refuses an untrusted config.
+- a **Trust** button when mise refuses an untrusted config;
+- the windows it had in your last session, with a **Restore** button.
+
+At the bottom: a switch that reopens the last session's windows at login, and
+whether auto-save is running, with **Save now**. On a narrow screen the two
+columns stack.
+
+## Restoring windows
+
+Hyprland doesn't bring windows back after a logout or reboot. Projectspaces
+saves, every minute, what it takes to reopen each window on workspaces 1–10:
+
+- **a terminal:** its folder, and the session it runs when that's herdr, tmux
+  or zellij. The session's server keeps the panes, so reattaching brings them
+  back;
+- **the browser:** one window per workspace. Chrome's own "Continue where you
+  left off" brings back the tabs;
+- **an app or a web app:** its desktop entry. A Chrome web app is matched by
+  its URL and profile.
+
+At the next login, that snapshot becomes the *last session*. `omaprojectspace
+restore`, the panel's **o**, or the login switch reopens what is missing. Each
+window opens on its own workspace, without taking focus, through the shim, so
+it gets that workspace's projectspace env. Windows that are open again
+already, and apps open on another workspace, are left alone, so restoring
+twice is safe.
+
+Not restored: where windows sat in the layout, what ran in a plain shell, and
+windows without a desktop entry (`omaprojectspace save` lists them).
 
 ## CLI
 
@@ -141,6 +171,9 @@ omaprojectspace status [--ws N] [--json]      the active (or given) workspace's 
 omaprojectspace env [--ws N | --name P]       the env a launch there gets
 omaprojectspace exec [--ws N | --name P] -- cmd
 omaprojectspace browser [url]                 the projectspace's $BROWSER, else the default
+omaprojectspace save                          snapshot the windows now (Hyprland does it every minute)
+omaprojectspace windows [--json]              the last session's windows, which are missing, and this session's snapshot
+omaprojectspace restore [--ws N] [--dry-run]  reopen the missing ones, each on its workspace
 omaprojectspace doctor                        check links, session PATH, every projectspace
 ```
 

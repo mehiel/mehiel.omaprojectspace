@@ -55,15 +55,44 @@ cat >"$SANDBOX/bin/mise" <<'EOF'
 if [[ -f BROKEN ]]; then echo "mise ERROR Config files in $PWD/mise.toml are not trusted." >&2; exit 1; fi
 if [[ -f env.json ]]; then cat env.json; else echo '{"GLOBAL":"1"}'; fi
 EOF
+# hyprctl: the active workspace is FAKE_ACTIVE_WS; windows are the JSON in
+# FAKE_CLIENTS. eval and dispatch are logged, and a dispatch after a restore's
+# window rule opens a window of the rule's class on its workspace (unless
+# FAKE_NO_WINDOW), the way Hyprland would.
 cat >"$SANDBOX/bin/hyprctl" <<'EOF'
 #!/bin/bash
-echo "{\"id\": ${FAKE_ACTIVE_WS:-1}}"
+log=$HOME/hyprctl.log
+case $1 in
+clients) cat "${FAKE_CLIENTS:-/nonexistent}" 2>/dev/null || echo '[]' ;;
+instances) echo "[{\"instance\":\"${HYPRLAND_INSTANCE_SIGNATURE:-}\",\"pid\":${FAKE_HYPR_PID:-1}}]" ;;
+eval)
+  echo "eval $2" >>"$log"
+  if [[ $2 =~ class\ =\ \[==\[\^\((.*)\)\$\]==\].*workspace\ =\ \'([0-9]+)\ silent\' ]]; then
+    printf '%s\n%s\n' "$(sed 's/\\\(.\)/\1/g' <<<"${BASH_REMATCH[1]}")" "${BASH_REMATCH[2]}" >"$HOME/hyprctl.pending"
+  fi
+  echo ok ;;
+dispatch)
+  echo "dispatch $2" >>"$log"
+  if [[ -z ${FAKE_NO_WINDOW:-} && -s $HOME/hyprctl.pending && -n ${FAKE_CLIENTS:-} ]]; then
+    { read -r class; read -r ws; } <"$HOME/hyprctl.pending"
+    : >"$HOME/hyprctl.pending"
+    n=$(($(cat "$HOME/hyprctl.count" 2>/dev/null || echo 0) + 1)); echo "$n" >"$HOME/hyprctl.count"
+    pid=$((4194100 + n))
+    [[ $2 =~ --dir=([^] ]+) ]] && { mkdir -p "$HOME/cwd"; echo "${BASH_REMATCH[1]}" >"$HOME/cwd/$pid"; }
+    jq --arg c "$class" --argjson ws "$ws" --argjson pid "$pid" \
+      '. + [{address: ("0x" + ($pid | tostring)), class: $c, initialClass: $c, pid: $pid, workspace: {id: $ws}, mapped: true}]' \
+      "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
+  fi
+  echo ok ;;
+*) echo "{\"id\": ${FAKE_ACTIVE_WS:-1}}" ;;
+esac
 EOF
+printf '#!/bin/sh\ncat "$HOME/cwd/$1" 2>/dev/null || echo "$HOME"\n' >"$SANDBOX/bin/omarchy-cmd-terminal-cwd"
 cat >"$SANDBOX/bin/uwsm-app" <<'EOF'
 #!/bin/bash
 echo "cwd=$PWD"
 echo "argv=$*"
-env | grep -E '^(PROJECTSPACE|PROJECTSPACE_HOME|BROWSER|TEAM)=' | sort
+env | grep -E '^(PROJECTSPACE|PROJECTSPACE_HOME|BROWSER|TEAM|OMAPROJECTSPACE_WORKSPACE)=' | sort
 EOF
 printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/bin/omarchy-shell"
 printf '#!/bin/sh\necho "stock browser $*"\n' >"$SANDBOX/bin/omarchy-launch-browser"
@@ -75,7 +104,7 @@ echo '{"GLOBAL":"1","TEAM":"globex","PROJECTSPACE":"Globex Corp"}' >"$HOME/Proje
 
 export PATH=$SANDBOX/bin:/usr/bin:/bin
 export OMAPROJECTSPACE_REAL_UWSM_APP=$SANDBOX/bin/uwsm-app
-unset XDG_CONFIG_HOME PROJECTSPACE PROJECTSPACE_HOME OMAPROJECTSPACE OMAPROJECTSPACE_WORKSPACE TEAM BROWSER
+unset XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME OMAPROJECTSPACE_STATE_DIR OMAPROJECTSPACE_CONFIG_DIR PROJECTSPACE PROJECTSPACE_HOME OMAPROJECTSPACE OMAPROJECTSPACE_WORKSPACE TEAM BROWSER
 
 run() { "$CLI" "$@" 2>&1; }
 
@@ -134,6 +163,10 @@ check "terminal fallback dir moves to the home" "argv=-- xdg-terminal-exec --dir
 out=$(FAKE_ACTIVE_WS=3 run launch -- -- xdg-terminal-exec --dir=/tmp)
 check "terminal from another terminal keeps its dir" "argv=-- xdg-terminal-exec --dir=/tmp" "$out"
 
+out=$(OMAPROJECTSPACE_WORKSPACE=3 FAKE_ACTIVE_WS=5 run launch -- -- foo)
+check "a forced workspace picks the projectspace" "TEAM=acme" "$out"
+refute "a forced workspace does not stick to the app" "OMAPROJECTSPACE_WORKSPACE" "$out"
+
 out=$(FAKE_ACTIVE_WS=3 run launch -- -s a -T -- foo)
 check "uwsm-app options pass through" "argv=-s a -T -- foo" "$out"
 check "uwsm-app options still get the env" "TEAM=acme" "$out"
@@ -190,6 +223,110 @@ check "browser elsewhere is the stock launcher" "stock browser https://example.c
 echo '{"GLOBAL":"1","TEAM":"acme"}' >"$HOME/Projects/acme/env.json"
 out=$(FAKE_ACTIVE_WS=3 run browser)
 check "browser on a projectspace without \$BROWSER is the stock launcher" "stock browser" "$out"
+
+# --------------------------------------------------------------- windows
+
+export OMAPROJECTSPACE_APPLICATIONS=$SANDBOX/apps
+export FAKE_CLIENTS=$SANDBOX/clients.json
+export FAKE_HYPR_PID=$$
+export OMAPROJECTSPACE_RESTORE_TIMEOUT=2
+mkdir -p "$SANDBOX/apps" "$HOME/cwd"
+desktop() { printf '[Desktop Entry]\nName=%s\nExec=%s\nStartupWMClass=%s\n' "$2" "$3" "$4" >"$SANDBOX/apps/$1"; }
+# Omarchy writes -Default into every web app's StartupWMClass, whatever
+# profile its Exec opens.
+desktop "Slack A.desktop" "Slack A" 'omarchy-launch-webapp "https://slack.example.com/" --profile-directory="Profile 1"' chrome-slack.example.com__-Default
+desktop "Slack B.desktop" "Slack B" 'omarchy-launch-webapp "https://slack.example.com/" --profile-directory="Profile 2"' chrome-slack.example.com__-Default
+desktop "notes.desktop" "Notes" notes ""
+client() { jq -nc --arg c "$1" --argjson ws "$2" --argjson pid "$3" '{address: ("0x" + ($pid | tostring)), class: $c, initialClass: $c, pid: $pid, workspace: {id: $ws}, mapped: true}'; }
+{
+  client foot 3 4194001
+  client google-chrome 3 4194002
+  client google-chrome 3 4194002
+  client chrome-slack.example.com__-Profile_2 3 4194002
+  client notes 4 4194003
+  client mystery 5 4194004
+  client foot -98 4194005
+} | jq -s . >"$FAKE_CLIENTS"
+echo "$HOME/Projects/acme" >"$HOME/cwd/4194001"
+cp "$FAKE_CLIENTS" "$SANDBOX/clients.full.json"
+STATE=$HOME/.local/state/omaprojectspace
+
+check "windows before any session" "No previous session saved yet" "$(run windows)"
+check "windows json before any session" '{"saved":null,"workspaces":[],"current":null' "$(run windows --json)"
+
+out=$(OMAPROJECTSPACE_INSTANCE=A run save)
+check "save counts what it can reopen" "Saved 4 windows on workspaces 3, 4." "$out"
+check "save names what it cannot" "can't reopen mystery on workspace 5" "$out"
+snap=$(cat "$STATE/session.json")
+check "save records the session" '"instance":"A"' "$snap"
+check "save records the projectspace" '"projectspace":"~/Projects/acme"' "$snap"
+check "save records a terminal's folder" '"dir":"~/Projects/acme"' "$snap"
+check "save keeps one browser per workspace" '1' "$(jq '[.workspaces["3"].windows[] | select(.kind == "browser")] | length' <<<"$snap")"
+check "a web app matches its profile's entry" '"desktop":"Slack B.desktop"' "$snap"
+check "an app matches its entry by id" '"desktop":"notes.desktop"' "$snap"
+refute "special workspaces are left out" '"-98"' "$snap"
+check "the same session overwrites in place" "session.json" "$(OMAPROJECTSPACE_INSTANCE=A run save --auto; ls "$STATE")"
+refute "the same session never rotates" "last-session.json" "$(ls "$STATE")"
+
+OMAPROJECTSPACE_INSTANCE=B run save --auto
+check "a new session keeps the old one as the last" '"instance":"A"' "$(cat "$STATE/last-session.json")"
+check "and starts its own" '"instance":"B"' "$(cat "$STATE/session.json")"
+check "windows reports this session's snapshot" '"windows":4,"workspaces":2}' "$(OMAPROJECTSPACE_INSTANCE=B run windows --json)"
+check "a snapshot from another session is not this one's" '"current":null' "$(OMAPROJECTSPACE_INSTANCE=C run windows --json)"
+
+export OMAPROJECTSPACE_INSTANCE=B
+check "everything open: nothing to restore" "already open" "$(run restore)"
+check "windows marks what is open" "· open  Browser" "$(run windows)"
+
+jq '[.[] | select(.class != "foot" and (.class | startswith("chrome-slack") | not))]' "$SANDBOX/clients.full.json" >"$FAKE_CLIENTS"
+out=$(run windows)
+check "windows marks a closed terminal" "○ Terminal · ~/Projects/acme" "$out"
+check "windows marks a closed web app" "○ Slack B" "$out"
+check "the plan counts what is missing" '"missing":2' "$(run windows --json)"
+out=$(run restore --dry-run)
+check "dry run lists the terminal" "workspace 3: Terminal · ~/Projects/acme" "$out"
+check "dry run lists the web app" "workspace 3: Slack B" "$out"
+check "dry run opens nothing" "0" "$(jq length <<<"$(grep -c dispatch "$HOME/hyprctl.log" 2>/dev/null || echo 0)")"
+
+: >"$HOME/hyprctl.log"
+out=$(run restore --ws 3)
+check "restore opens the terminal" "✓ workspace 3: Terminal · ~/Projects/acme" "$out"
+check "restore opens the web app" "✓ workspace 3: Slack B" "$out"
+log=$(cat "$HOME/hyprctl.log")
+check "restore places windows silently on their workspace" "workspace = '3 silent', no_initial_focus = true" "$log"
+check "restore escapes the class for the rule" 'chrome-slack\.example\.com__-Profile_2' "$log"
+check "restore launches through the shim with the workspace" "OMAPROJECTSPACE_WORKSPACE=3 $REPO/shim/uwsm-app -- xdg-terminal-exec --dir=$HOME/Projects/acme" "$log"
+check "restore opens web apps from their entry" 'gtk-launch Slack\ B.desktop' "$log"
+check "restore drops the rule afterwards" "t.rule:set_enabled(false); t.rule = nil" "$(tail -1 "$HOME/hyprctl.log")"
+check "restored windows count as open" "already open" "$(run restore)"
+
+jq '[.[] | select(.class != "foot")]' "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
+out=$(FAKE_NO_WINDOW=1 run restore --notify)
+check "a window that never shows up fails" "✗ workspace 3: Terminal · ~/Projects/acme (no window after 2s)" "$out"
+check "and the rule still goes" "t.rule = nil" "$(tail -1 "$HOME/hyprctl.log")"
+check "restore --notify reports" "Windows restored" "$(tail -1 "$HOME/notifications")"
+check "restore rejects workspace 11" "workspace must be 1-10" "$(run restore --ws 11)"
+
+jq '[.[] | if .class == "notes" then .workspace.id = 6 else . end]' "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
+check "an app open elsewhere is not opened twice" "· open on 6  Notes" "$(run windows)"
+refute "and restore leaves it" "Notes" "$(FAKE_NO_WINDOW=1 run restore)"
+
+# Login: once per session, and only right after it started.
+check "login restore outside the login window does nothing" "" "$(OMAPROJECTSPACE_LOGIN_WINDOW=0 run restore --login)"
+refute "and opens nothing" "✓" "$(OMAPROJECTSPACE_LOGIN_WINDOW=0 run restore --login)"
+check "login restore right after login" "✓ workspace 3: Terminal" "$(OMAPROJECTSPACE_LOGIN_WINDOW=100000 run restore --login)"
+check "login restore marks the session" 'B' "$(jq -r .restored_instance "$STATE/last-session.json")"
+jq '[.[] | select(.class != "foot")]' "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
+refute "login restore runs once per session" "✓" "$(OMAPROJECTSPACE_LOGIN_WINDOW=100000 run restore --login)"
+
+# Logging out closes every window before Hyprland exits.
+echo '[]' >"$FAKE_CLIENTS"
+run save --auto
+check "an automatic save of no windows keeps the snapshot" '"kind":"browser"' "$(cat "$STATE/session.json")"
+check "a manual save of no windows clears it" "Saved 0 windows." "$(run save)"
+OMAPROJECTSPACE_INSTANCE=C run save --auto
+check "an empty session never replaces the last one" 'A' "$(jq -r .instance "$STATE/last-session.json")"
+unset OMAPROJECTSPACE_INSTANCE FAKE_CLIENTS
 
 # ---------------------------------------------------------------- shim
 

@@ -26,6 +26,7 @@ Panel {
   // widget's shell.json entry alongside hoverOutDelayMs.
   readonly property var names: root.settings && root.settings.names instanceof Object ? root.settings.names : ({})
   readonly property int hoverOutDelayMs: Math.max(0, Number(root.setting("hoverOutDelayMs", 120)))
+  readonly property bool restoreOnLogin: root.setting("restoreOnLogin", false) === true
 
   // updateEntryInline replaces the whole entry, so every write resends the
   // current settings in full. type/source are leftovers of the bar/modules
@@ -53,6 +54,10 @@ Panel {
     root.persistSettings({ hoverOutDelayMs: Math.max(0, Math.round(ms)) })
   }
 
+  function setRestoreOnLogin(on) {
+    root.persistSettings({ restoreOnLogin: !!on })
+  }
+
   // ---- projectspaces
   // Everything about projectspaces comes from the CLI, which is also the only
   // writer of the attachments file; the widget never parses mise itself.
@@ -65,6 +70,7 @@ Panel {
   property bool listQueued: false
 
   function refresh() {
+    refreshWindows()
     if (listProc.running) { listQueued = true; return }
     listProc.running = true
   }
@@ -137,6 +143,85 @@ Panel {
     if (!p || p.missing) return
     Util.execArgv(["env", "OMAPROJECTSPACE_WORKSPACE=" + id, "uwsm-app", "--", "xdg-terminal-exec", "--dir=" + p.home])
     root.close()
+  }
+
+  // ---- the last session's windows
+  // `save --auto` runs every minute from Hyprland (hypr/omaprojectspace.lua);
+  // a new session turns the previous one's snapshot into this.
+  property var lastSession: Model.parseWindows("")
+  // The workspace a restore is running for, 0 for all, -1 for none.
+  property int restoringId: -1
+
+  function refreshWindows() {
+    if (!windowsProc.running) windowsProc.running = true
+  }
+
+  Process {
+    id: windowsProc
+    command: [root.cli, "windows", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: if (text.indexOf("\"workspaces\"") !== -1) root.lastSession = Model.parseWindows(text)
+    }
+  }
+
+  // Windows open on their own workspaces without taking focus; this runs
+  // apart from the action queue so attaching stays instant meanwhile.
+  function restoreWindows(id) {
+    if (restoreProc.running) return
+    root.restoringId = id
+    restoreProc.command = [root.cli, "restore", "--notify"].concat(id > 0 ? ["--ws", String(id)] : [])
+    restoreProc.running = true
+  }
+
+  Process {
+    id: restoreProc
+    onExited: {
+      root.restoringId = -1
+      root.refreshWindows()
+    }
+  }
+
+  // `s` in the panel: a snapshot now, for the minute before a reboot.
+  property bool saving: false
+
+  function saveNow() {
+    if (saveProc.running) return
+    root.saving = true
+    saveProc.running = true
+  }
+
+  Process {
+    id: saveProc
+    command: [root.cli, "save"]
+    onExited: {
+      root.saving = false
+      root.refreshWindows()
+    }
+  }
+
+  // Ages in the panel ("2 min ago") follow the clock while it is open, and
+  // the snapshot is re-read so the auto-save line stays true.
+  property real now: Date.now() / 1000
+
+  Timer {
+    interval: 20000
+    repeat: true
+    running: root.opened
+    onTriggered: {
+      root.now = Date.now() / 1000
+      root.refreshWindows()
+    }
+  }
+
+  // Every bar instance asks; the CLI acts once per session and only right
+  // after login, so a shell restart later never reopens anything.
+  Timer {
+    interval: 4000
+    running: root.restoreOnLogin
+    onTriggered: if (!restoreProc.running) {
+      restoreProc.command = [root.cli, "restore", "--login"]
+      restoreProc.running = true
+    }
   }
 
   function editConfig(id) {
@@ -532,6 +617,7 @@ Panel {
       editingId = -1
       if (!cursorPinned) cursorId = monitorActiveId > 0 && monitorActiveId <= 10 ? monitorActiveId : 1
       cursorPinned = false
+      now = Date.now() / 1000
       refresh()
     } else {
       editingId = -1
@@ -563,7 +649,9 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: panel.loadedContent
-    contentWidth: panel.fittedContentWidth(Style.space(380))
+    // Workspaces on the left, the selected one's details on the right; a
+    // screen too narrow for both stacks them (PanelContent.wide).
+    contentWidth: panel.fittedContentWidth(Style.space(780))
     contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(960))
 
     content: PanelContent {

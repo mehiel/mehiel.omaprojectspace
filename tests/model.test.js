@@ -226,5 +226,56 @@ test("window counts read naturally", function() {
   assert.strictEqual(Model.windowsLabel(4), "4 windows")
 })
 
+// ------------------------------------------------------------ windows
+
+var WINDOWS = JSON.stringify({
+  saved: 1000,
+  workspaces: [
+    { ws: 8, projectspace: "~/Projects/acme", missing: 2, windows: [
+      { kind: "terminal", name: "herdr · ~/Projects/acme", open: false },
+      { kind: "browser", name: "Browser", open: true },
+      { kind: "app", name: "Slack", open: false }] },
+    { ws: 2, projectspace: null, missing: 0, windows: [{ kind: "browser", name: "Browser", open: true }] }
+  ]
+})
+
+test("the last session parses per workspace, with what is missing", function() {
+  var session = Model.parseWindows(WINDOWS)
+  assert.strictEqual(session.missing, 2)
+  assert.strictEqual(Model.restoreFor(session, 8).windows.length, 3)
+  assert.strictEqual(Model.restoreSummary(Model.restoreFor(session, 8)), "2 to reopen")
+  assert.strictEqual(Model.restoreSummary(Model.restoreFor(session, 2)), "all open")
+  assert.strictEqual(Model.restoreFor(session, 5), null)
+})
+
+test("no or broken window data is an empty session", function() {
+  assert.strictEqual(Model.parseWindows("").missing, 0)
+  assert.deepStrictEqual(Model.parseWindows("{oops").workspaces, [])
+  assert.deepStrictEqual(Model.parseWindows('{"saved":null,"workspaces":[]}').workspaces, [])
+  assert.strictEqual(Model.restoreSummary(null), "")
+})
+
+test("snapshot age reads naturally", function() {
+  assert.strictEqual(Model.savedLabel(null, 100), "")
+  assert.strictEqual(Model.savedLabel(1000, 1010), "just now")
+  assert.strictEqual(Model.savedLabel(1000, 1000 + 25 * 60), "25 min ago")
+  assert.strictEqual(Model.savedLabel(1000, 1000 + 5 * 3600), "5 h ago")
+  assert.strictEqual(Model.savedLabel(1000, 1000 + 30 * 3600), "yesterday")
+  assert.strictEqual(Model.savedLabel(1000, 1000 + 72 * 3600), "3 days ago")
+})
+
+test("the auto-save line says whether this session's snapshot is fresh", function() {
+  function at(current, uptime) {
+    return Model.parseWindows(JSON.stringify({ saved: null, workspaces: [], current: current, uptime: uptime }))
+  }
+  var fresh = at({ saved: 1000, windows: 12, workspaces: 4 }, 5000)
+  assert.deepStrictEqual(Model.autosaveStatus(fresh, 1020), { text: "Auto-saved 12 windows  ·  just now", stale: false })
+  assert.strictEqual(Model.autosaveStatus(at({ saved: 1000, windows: 1, workspaces: 1 }, 5000), 1100).text, "Auto-saved 1 window  ·  2 min ago")
+  assert.deepStrictEqual(Model.autosaveStatus(fresh, 1000 + 14 * 60), { text: "Auto-save stopped  ·  last 14 min ago", stale: true })
+  assert.strictEqual(Model.autosaveStatus(at(null, 30), 1000).stale, false)
+  assert.deepStrictEqual(Model.autosaveStatus(at(null, 600), 1000), { text: "Auto-save isn't running", stale: true })
+  assert.strictEqual(Model.autosaveStatus(Model.parseWindows(""), 1000).stale, false)
+})
+
 console.log(passes + " passed, " + failures + " failed")
 process.exit(failures === 0 ? 0 : 1)
