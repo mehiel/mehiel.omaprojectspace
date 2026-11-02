@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "mehiel.omaprojectspace",
   "name": "Projectspaces",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "mehiel",
   "license": "MIT",
-  "description": "Named workspaces that can be attached to a projectspace: a team folder under ~/Projects whose mise config sets the env for everything launched there.",
+  "description": "Give every workspace a team: anything launched there starts in the team folder, with its mise env and browser profile. Per-monitor workspaces, saved windows, named workspaces in the bar.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
