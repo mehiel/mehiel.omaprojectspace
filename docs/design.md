@@ -168,10 +168,17 @@ The palette does not come from the theme, because many themes are monochrome.
 
 - **Per-projectspace webapps.** Example: a Slack webapp in each team's Chrome
   profile, declared in that team's mise config. This would cover
-  single-instance apps that cannot switch env.
-- **Default-browser routing.** Links clicked inside other apps would open in
-  the team's browser. This means replacing the desktop's default browser, so
-  it has to be opt-in.
+  single-instance apps that cannot switch env, and it is already the better
+  setup by hand: each team's sessions stay in its own profile, the projectspace
+  keeps its chat, and it feels as native as the desktop app. An Omarchy web app
+  is a Chrome `--app` window with no browser UI, with its own launcher entry,
+  icon and notifications, and it is lighter than a separate Electron runtime.
+  `omarchy-launch-webapp` uses the default browser's default profile, so a web
+  app installed by hand needs a custom exec that runs the team's `$BROWSER`
+  script.
+- **Default-browser routing.** Apps that ignore `$BROWSER` would also open
+  links in the team's browser. This means replacing the desktop's default
+  browser, so it has to be opt-in.
 - **A projectspace marker.** If one-level discovery ever turns out to be too
   broad, `PROJECTSPACE` in a folder's env can become the marker that makes it
   a projectspace.

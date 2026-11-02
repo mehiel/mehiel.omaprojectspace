@@ -248,10 +248,30 @@ Set `OMAPROJECTSPACE_ROOTS` (colon-separated) to scan folders other than
 
 - **Running single-instance apps keep their own env.** A Slack desktop that is
   already running does not switch projectspaces. Chrome is fine, because a
-  profile hand-off opens a window in the right profile. The intended setup for
-  Slack and similar apps is one webapp per projectspace in that projectspace's
-  Chrome profile, defined in its mise config; this isn't built yet.
-- **Links clicked inside other apps** go to the desktop's default browser.
+  profile hand-off opens a window in the right profile.
+
+  For Slack and similar apps, the better setup is one Omarchy web app per team,
+  kept on that team's workspace. Give `omarchy webapp install` a custom exec
+  that runs the team's browser script, for example
+  `~/.local/bin/chrome-acme --app=https://acme.slack.com`, so the app runs in
+  that team's Chrome profile. This setup:
+  - **isolates teams:** each workspace signs in to its own team only;
+  - **preserves privacy:** cookies, sessions and notifications stay in that
+    team's profile, so one client never sees another's;
+  - **keeps the projectspace self-contained:** its folder, env, browser and chat
+    all belong to it;
+  - **feels just as native:** an Omarchy web app is not a browser tab. Like the
+    desktop app, it has:
+    - its own window, with no tabs or address bar;
+    - its own launcher entry and icon;
+    - desktop notifications;
+  - **is lighter:** it runs on the Chrome you already have, without a separate
+    Electron runtime.
+
+  Declaring these web apps in the projectspace's mise config isn't built yet.
+- **A few apps ignore `$BROWSER`.** Apps launched in a projectspace inherit
+  its `$BROWSER`, and most open links with it. The few that skip it and ask
+  the desktop directly open links in the default browser instead.
 - **Windows keep the env they started with.** Moving a window to another
   workspace doesn't change it.
 

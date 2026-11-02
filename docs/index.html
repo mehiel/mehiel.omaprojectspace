@@ -134,6 +134,7 @@
   .limit .mark { color: var(--acme); font-weight: 700; }
   .limit p { margin: 0; }
   .limit b { color: var(--text-strong); }
+  .limit .sublist { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; }
 
   footer { margin: 110px 0 0; padding: 36px 0 60px; border-top: 1px solid var(--line); color: var(--text-dim); font-size: 14.5px;
            display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
@@ -329,8 +330,14 @@ workspace 1: Acme  ~/Projects/acme
     <div class="eyebrow">Good to know</div>
     <h2>What it doesn't do (yet).</h2>
     <div class="limits">
-      <div class="limit"><span class="mark">—</span><p><b>Running single-instance apps keep their env.</b> A Slack desktop that's already open won't switch teams. Chrome is fine: a new window opens in the right profile.</p></div>
-      <div class="limit"><span class="mark">—</span><p><b>Links clicked inside other apps</b> go to your default browser, not the team's.</p></div>
+      <div class="limit"><span class="mark">—</span><div><p><b>Running single-instance apps keep their env.</b> A Slack desktop that's already open won't switch teams. Chrome is fine: a new window opens in the right profile. For Slack the better setup is one Omarchy web app per team, run in that team's Chrome profile on its own workspace:</p>
+        <ul class="sublist">
+          <li>Teams stay apart, and their sessions stay private.</li>
+          <li>The projectspace keeps its own chat.</li>
+          <li>It feels native: its own window with no browser bar, its own icon and notifications.</li>
+          <li>It's lighter: it runs on the Chrome you already have, not a separate Electron runtime.</li>
+        </ul></div></div>
+      <div class="limit"><span class="mark">—</span><p><b>A few apps ignore <code>BROWSER</code>.</b> Most apps launched in a projectspace open links in the team's browser. The few that skip <code>BROWSER</code> and ask the desktop directly use your default browser.</p></div>
       <div class="limit"><span class="mark">—</span><p><b>Windows keep the env they started with</b>, even if you move them to another workspace.</p></div>
     </div>
   </section>
