@@ -62,8 +62,17 @@ EOF
 cat >"$SANDBOX/bin/hyprctl" <<'EOF'
 #!/bin/bash
 log=$HOME/hyprctl.log
+[[ $1 == -j ]] && shift
 case $1 in
 clients) cat "${FAKE_CLIENTS:-/nonexistent}" 2>/dev/null || echo '[]' ;;
+# clients; workspaces; monitors: one monitor, every workspace with windows on it.
+--batch)
+  clients=$(cat "${FAKE_CLIENTS:-/nonexistent}" 2>/dev/null || echo '[]')
+  echo "$clients"
+  jq '[.[].workspace.id | select(. > 0)] | unique | map({id: ., monitor: "DP-1", tiledLayout: "dwindle"})' <<<"$clients"
+  echo '[{"name":"DP-1","x":0,"y":0,"width":2000,"height":1000,"scale":1,"transform":0,"reserved":[0,0,0,0]}]' ;;
+# monitors: the focused one shows the Quake console when FAKE_QCONSOLE is set.
+monitors) echo "[{\"name\":\"DP-1\",\"focused\":true,\"specialWorkspace\":{\"name\":\"${FAKE_QCONSOLE:+special:qconsole}\"}}]" ;;
 instances) echo "[{\"instance\":\"${HYPRLAND_INSTANCE_SIGNATURE:-}\",\"pid\":${FAKE_HYPR_PID:-1}}]" ;;
 eval)
   echo "eval $2" >>"$log"
@@ -94,7 +103,7 @@ echo "cwd=$PWD"
 echo "argv=$*"
 env | grep -E '^(PROJECTSPACE|PROJECTSPACE_HOME|BROWSER|TEAM|OMAPROJECTSPACE_WORKSPACE)=' | sort
 EOF
-printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/bin/omarchy-shell"
+printf '#!/bin/sh\necho "$*" >>"$HOME/shell.log"\nexit 0\n' >"$SANDBOX/bin/omarchy-shell"
 printf '#!/bin/sh\necho "stock browser $*"\n' >"$SANDBOX/bin/omarchy-launch-browser"
 printf '#!/bin/sh\necho "notify $*" >>"$HOME/notifications"\n' >"$SANDBOX/bin/notify-send"
 chmod +x "$SANDBOX/bin"/*
@@ -123,7 +132,10 @@ check "list has no attachments yet" '"attachments":{}' "$out"
 check "attach by name" "workspace 3 → acme" "$(run attach 3 acme)"
 check "attachments are stored with ~" '"3": "~/Projects/acme"' "$(cat "$HOME/.config/omaprojectspace/attachments.json")"
 check "attach by path outside the roots" "workspace 10 → initech" "$(run attach 10 ~/elsewhere/initech)"
-check "attach rejects workspace 11" "workspace must be 1-10" "$(run attach 11 acme)"
+check "attach takes a second monitor's workspace" "workspace 19 → acme" "$(run attach 19 acme)"
+check "detach takes it too" "workspace 19 detached" "$(run detach 19)"
+check "attach rejects workspace 0" "workspace must be a number from 1" "$(run attach 0 acme)"
+check "attach rejects a name for a workspace" "workspace must be a number from 1" "$(run attach x acme)"
 check "attach rejects unknown names" "no projectspace named 'nope'" "$(run attach 4 nope)"
 check "attach rejects folders without mise" "not a projectspace" "$(run attach 4 ~/Projects/plain)"
 
@@ -186,6 +198,27 @@ check "non-launch uwsm-app calls pass through" "argv=stop" "$out"
 out=$(OMAPROJECTSPACE_WORKSPACE=3 FAKE_ACTIVE_WS=5 run launch -- -- foo)
 check "OMAPROJECTSPACE_WORKSPACE overrides the active workspace" "TEAM=acme" "$out"
 
+# The Quake console: follows the workspace until the "qconsole" key says otherwise.
+att=$HOME/.config/omaprojectspace/attachments.json
+out=$(FAKE_QCONSOLE=1 FAKE_ACTIVE_WS=3 run launch -- -- foo)
+check "the console follows the workspace by default" "TEAM=acme" "$out"
+jq '. + {qconsole: "none"}' "$att" >"$att.tmp" && mv "$att.tmp" "$att"
+out=$(FAKE_QCONSOLE=1 FAKE_ACTIVE_WS=3 PROJECTSPACE=stale run launch -- -- foo)
+refute "qconsole none: no projectspace env" "TEAM=acme" "$out"
+refute "qconsole none: drops a stale PROJECTSPACE" "PROJECTSPACE=" "$out"
+check "qconsole none: still launches" "argv=-- foo" "$out"
+out=$(FAKE_ACTIVE_WS=3 run launch -- -- foo)
+check "qconsole only applies while the console is open" "TEAM=acme" "$out"
+out=$(FAKE_QCONSOLE=1 OMAPROJECTSPACE_WORKSPACE=3 run launch -- -- foo)
+check "a launch pinned to a workspace ignores the console" "TEAM=acme" "$out"
+jq '.qconsole = "~/Projects/globex"' "$att" >"$att.tmp" && mv "$att.tmp" "$att"
+out=$(FAKE_QCONSOLE=1 FAKE_ACTIVE_WS=3 run launch -- -- foo)
+check "qconsole home: that projectspace's env" "TEAM=globex" "$out"
+run attach 4 acme >/dev/null
+check "attach keeps the qconsole key" '"qconsole": "~/Projects/globex"' "$(cat "$att")"
+run detach 4 >/dev/null
+jq 'del(.qconsole)' "$att" >"$att.tmp" && mv "$att.tmp" "$att"
+
 touch "$HOME/Projects/acme/BROKEN"
 out=$(FAKE_ACTIVE_WS=3 run launch -- -- foo)
 check "a failing mise still launches" "argv=-- foo" "$out"
@@ -237,7 +270,7 @@ desktop() { printf '[Desktop Entry]\nName=%s\nExec=%s\nStartupWMClass=%s\n' "$2"
 desktop "Slack A.desktop" "Slack A" 'omarchy-launch-webapp "https://slack.example.com/" --profile-directory="Profile 1"' chrome-slack.example.com__-Default
 desktop "Slack B.desktop" "Slack B" 'omarchy-launch-webapp "https://slack.example.com/" --profile-directory="Profile 2"' chrome-slack.example.com__-Default
 desktop "notes.desktop" "Notes" notes ""
-client() { jq -nc --arg c "$1" --argjson ws "$2" --argjson pid "$3" '{address: ("0x" + ($pid | tostring)), class: $c, initialClass: $c, pid: $pid, workspace: {id: $ws}, mapped: true}'; }
+client() { jq -nc --arg c "$1" --argjson ws "$2" --argjson pid "$3" '{address: ("0x" + ($pid | tostring)), class: $c, initialClass: $c, pid: $pid, workspace: {id: $ws}, mapped: true, title: ($c + " title"), at: [0, 0], size: [1000, 1000], floating: false, fullscreen: 0, focusHistoryID: 0}'; }
 {
   client foot 3 4194001
   client google-chrome 3 4194002
@@ -250,31 +283,30 @@ client() { jq -nc --arg c "$1" --argjson ws "$2" --argjson pid "$3" '{address: (
 echo "$HOME/Projects/acme" >"$HOME/cwd/4194001"
 cp "$FAKE_CLIENTS" "$SANDBOX/clients.full.json"
 STATE=$HOME/.local/state/omaprojectspace
+SAVED=$HOME/.config/omaprojectspace/windows.json
+export OMAPROJECTSPACE_INSTANCE=B
 
-check "windows before any session" "No previous session saved yet" "$(run windows)"
-check "windows json before any session" '{"saved":null,"workspaces":[],"current":null' "$(run windows --json)"
+check "windows before any save" "No saved windows yet" "$(run windows)"
+check "windows json before any save" '{"workspaces":[],"live":' "$(run windows --json)"
+check "restore with nothing saved" "no workspace has saved windows" "$(run restore)"
 
-out=$(OMAPROJECTSPACE_INSTANCE=A run save)
-check "save counts what it can reopen" "Saved 4 windows on workspaces 3, 4." "$out"
-check "save names what it cannot" "can't reopen mystery on workspace 5" "$out"
-snap=$(cat "$STATE/session.json")
-check "save records the session" '"instance":"A"' "$snap"
+out=$(run save --ws 3)
+check "save counts what it can reopen on that workspace" "Saved 3 windows on workspace 3." "$out"
+snap=$(jq -c '.workspaces["3"]' "$SAVED")
 check "save records the projectspace" '"projectspace":"~/Projects/acme"' "$snap"
 check "save records a terminal's folder" '"dir":"~/Projects/acme"' "$snap"
-check "save keeps one browser per workspace" '1' "$(jq '[.workspaces["3"].windows[] | select(.kind == "browser")] | length' <<<"$snap")"
+check "save keeps one browser per workspace" '1' "$(jq '[.windows[] | select(.kind == "browser")] | length' <<<"$snap")"
 check "a web app matches its profile's entry" '"desktop":"Slack B.desktop"' "$snap"
-check "an app matches its entry by id" '"desktop":"notes.desktop"' "$snap"
-refute "special workspaces are left out" '"-98"' "$snap"
-check "the same session overwrites in place" "session.json" "$(OMAPROJECTSPACE_INSTANCE=A run save --auto; ls "$STATE")"
-refute "the same session never rotates" "last-session.json" "$(ls "$STATE")"
+refute "save leaves other workspaces alone" '"4"' "$(jq -c '.workspaces | keys' "$SAVED")"
+check "save defaults to the active workspace" "Saved 1 window on workspace 4." "$(FAKE_ACTIVE_WS=4 run save)"
+check "an app matches its entry by id" '"desktop":"notes.desktop"' "$(jq -c '.workspaces["4"]' "$SAVED")"
+check "save names what it cannot reopen" "nothing to save on workspace 5" "$(run save --ws 5)"
+check "and names the windows it cannot reopen" "no desktop entry reopens mystery" "$(run save --ws 5)"
+check "an empty workspace has nothing to save" "it has no windows" "$(run save --ws 9)"
+refute "a workspace with nothing reopenable is not saved" '"5"' "$(jq -c '.workspaces | keys' "$SAVED")"
+check "save rejects workspace 0" "workspace must be a number from 1" "$(run save --ws 0)"
+check "saving is on demand: no session files" "" "$(ls "$STATE" 2>/dev/null | grep -E 'session' || true)"
 
-OMAPROJECTSPACE_INSTANCE=B run save --auto
-check "a new session keeps the old one as the last" '"instance":"A"' "$(cat "$STATE/last-session.json")"
-check "and starts its own" '"instance":"B"' "$(cat "$STATE/session.json")"
-check "windows reports this session's snapshot" '"windows":4,"workspaces":2}' "$(OMAPROJECTSPACE_INSTANCE=B run windows --json)"
-check "a snapshot from another session is not this one's" '"current":null' "$(OMAPROJECTSPACE_INSTANCE=C run windows --json)"
-
-export OMAPROJECTSPACE_INSTANCE=B
 check "everything open: nothing to restore" "already open" "$(run restore)"
 check "windows marks what is open" "· open  Browser" "$(run windows)"
 
@@ -282,7 +314,14 @@ jq '[.[] | select(.class != "foot" and (.class | startswith("chrome-slack") | no
 out=$(run windows)
 check "windows marks a closed terminal" "○ Terminal · ~/Projects/acme" "$out"
 check "windows marks a closed web app" "○ Slack B" "$out"
-check "the plan counts what is missing" '"missing":2' "$(run windows --json)"
+check "windows says when it was saved" "workspace 3  ~/Projects/acme  (saved " "$out"
+out=$(run windows --json)
+check "the plan counts what is missing" '"missing":2' "$out"
+check "each workspace says when it was saved" 'true' "$(jq '.workspaces[0].saved > 0' <<<"$out")"
+check "windows json has what is open now, with the layout" '"layout":"dwindle"' "$(jq -c '.live["3"]' <<<"$out")"
+check "and the monitor" '"name":"DP-1"' "$(jq -c '.live["3"].monitor' <<<"$out")"
+check "open windows carry geometry, title and their saved name" '"title":"google-chrome title","at":[0,0],"size":[1000,1000]' "$(jq -c '.live["3"].windows[] | select(.kind == "browser")' <<<"$out" | head -1)"
+check "a window nothing can reopen is still listed as open" '"name":"mystery"' "$(jq -c '.live["5"].windows[0]' <<<"$out")"
 out=$(run restore --dry-run)
 check "dry run lists the terminal" "workspace 3: Terminal · ~/Projects/acme" "$out"
 check "dry run lists the web app" "workspace 3: Slack B" "$out"
@@ -305,7 +344,7 @@ out=$(FAKE_NO_WINDOW=1 run restore --notify)
 check "a window that never shows up fails" "✗ workspace 3: Terminal · ~/Projects/acme (no window after 2s)" "$out"
 check "and the rule still goes" "t.rule = nil" "$(tail -1 "$HOME/hyprctl.log")"
 check "restore --notify reports" "Windows restored" "$(tail -1 "$HOME/notifications")"
-check "restore rejects workspace 11" "workspace must be 1-10" "$(run restore --ws 11)"
+check "restore rejects workspace 0" "workspace must be a number from 1" "$(run restore --ws 0)"
 
 jq '[.[] | if .class == "notes" then .workspace.id = 6 else . end]' "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
 check "an app open elsewhere is not opened twice" "· open on 6  Notes" "$(run windows)"
@@ -315,18 +354,46 @@ refute "and restore leaves it" "Notes" "$(FAKE_NO_WINDOW=1 run restore)"
 check "login restore outside the login window does nothing" "" "$(OMAPROJECTSPACE_LOGIN_WINDOW=0 run restore --login)"
 refute "and opens nothing" "✓" "$(OMAPROJECTSPACE_LOGIN_WINDOW=0 run restore --login)"
 check "login restore right after login" "✓ workspace 3: Terminal" "$(OMAPROJECTSPACE_LOGIN_WINDOW=100000 run restore --login)"
-check "login restore marks the session" 'B' "$(jq -r .restored_instance "$STATE/last-session.json")"
+check "login restore marks the session" 'B' "$(cat "$STATE/login-restored")"
 jq '[.[] | select(.class != "foot")]' "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
 refute "login restore runs once per session" "✓" "$(OMAPROJECTSPACE_LOGIN_WINDOW=100000 run restore --login)"
+check "a new session restores at login again" "✓ workspace 3: Terminal" "$(OMAPROJECTSPACE_INSTANCE=C OMAPROJECTSPACE_LOGIN_WINDOW=100000 run restore --login)"
 
-# Logging out closes every window before Hyprland exits.
-echo '[]' >"$FAKE_CLIENTS"
-run save --auto
-check "an automatic save of no windows keeps the snapshot" '"kind":"browser"' "$(cat "$STATE/session.json")"
-check "a manual save of no windows clears it" "Saved 0 windows." "$(run save)"
-OMAPROJECTSPACE_INSTANCE=C run save --auto
-check "an empty session never replaces the last one" 'A' "$(jq -r .instance "$STATE/last-session.json")"
+# Save again replaces; forget drops.
+cp "$SANDBOX/clients.full.json" "$FAKE_CLIENTS"
+jq '[.[] | select(.class != "google-chrome")]' "$FAKE_CLIENTS" >"$FAKE_CLIENTS.tmp" && mv "$FAKE_CLIENTS.tmp" "$FAKE_CLIENTS"
+run save --ws 3 >/dev/null
+refute "saving again replaces the setup" '"kind":"browser"' "$(jq -c '.workspaces["3"]' "$SAVED")"
+check "forget drops a workspace's save" "Forgot workspace 3" "$(run forget --ws 3)"
+check "and only that one" '["4"]' "$(jq -c '.workspaces | keys' "$SAVED")"
 unset OMAPROJECTSPACE_INSTANCE FAKE_CLIENTS
+
+# ------------------------------------------------------------- renumber
+# Omarchy moves a workspace into another monitor's block of ten under a new id.
+
+ATT=$HOME/.config/omaprojectspace/attachments.json
+run attach 9 acme >/dev/null
+: >"$HOME/shell.log"
+check "renumber reports the move" "workspace 9 → 19" "$(run renumber 9:19)"
+check "the attachment follows" '"19":"~/Projects/acme"' "$(jq -c .workspaces "$ATT")"
+refute "and leaves the old id" '"9":' "$(jq -c .workspaces "$ATT")"
+check "the bar is told, to carry names" "mehiel.omaprojectspace renumber 9:19" "$(cat "$HOME/shell.log")"
+run attach 9 ~/elsewhere/initech >/dev/null
+run renumber 9:19 >/dev/null
+check "a displaced attachment takes the freed id" '"9":"~/Projects/acme"' "$(jq -c .workspaces "$ATT")"
+check "and the newcomer its new one" '"19":"~/elsewhere/initech"' "$(jq -c .workspaces "$ATT")"
+run renumber 9:19 19:9 >/dev/null
+check "a trade swaps them back" '"19":"~/Projects/acme"' "$(jq -c .workspaces "$ATT")"
+run detach 9 >/dev/null
+run renumber 9:19 >/dev/null
+check "an unattached workspace lands unattached; what sat there takes its old id" '"9":"~/Projects/acme"' "$(jq -c .workspaces "$ATT")"
+refute "and the new id has no attachment" '"19":' "$(jq -c .workspaces "$ATT")"
+run renumber 9:19 >/dev/null
+check "saved windows follow too" '["14"]' "$(run renumber 4:14 >/dev/null; jq -c '.workspaces | keys' "$SAVED")"
+check "renumbering nothing attached changes nothing" '"19":"~/Projects/acme"' "$(run renumber 5:15 >/dev/null; jq -c .workspaces "$ATT")"
+check "renumber rejects junk" "renumber takes <from>:<to>" "$(run renumber 9-19)"
+check "renumber rejects two onto one" "two workspaces onto one id" "$(run renumber 8:19 9:19)"
+check "renumber to the same id is a no-op" "" "$(run renumber 9:9)"
 
 # ---------------------------------------------------------------- shim
 

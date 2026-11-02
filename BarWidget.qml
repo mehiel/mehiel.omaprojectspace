@@ -25,6 +25,8 @@ Panel {
   // Custom names, keyed by workspace id as a string, persisted on this
   // widget's shell.json entry alongside hoverOutDelayMs.
   readonly property var names: root.settings && root.settings.names instanceof Object ? root.settings.names : ({})
+  // How long the strip stays open after the pointer leaves; set in shell.json
+  // only ("hoverOutDelayMs" on this widget's entry).
   readonly property int hoverOutDelayMs: Math.max(0, Number(root.setting("hoverOutDelayMs", 120)))
   readonly property bool restoreOnLogin: root.setting("restoreOnLogin", false) === true
 
@@ -50,12 +52,17 @@ Panel {
     root.persistSettings({ names: next })
   }
 
-  function setHoverOutDelay(ms) {
-    root.persistSettings({ hoverOutDelayMs: Math.max(0, Math.round(ms)) })
-  }
-
   function setRestoreOnLogin(on) {
     root.persistSettings({ restoreOnLogin: !!on })
+  }
+
+  // `omaprojectspace renumber` moves attachments and saved windows; names are
+  // kept here, so it hands them over. "9:19 8:18" moves 9 to 19 and 8 to 18.
+  function renumberNames(pairs) {
+    var map = Model.parseRenumber(pairs)
+    if (Object.keys(map).length === 0) return
+    var next = Model.renumbered(root.names, map)
+    if (JSON.stringify(next) !== JSON.stringify(root.names)) root.persistSettings({ names: next })
   }
 
   // ---- projectspaces
@@ -145,10 +152,10 @@ Panel {
     root.close()
   }
 
-  // ---- the last session's windows
-  // `save --auto` runs every minute from Hyprland (hypr/omaprojectspace.lua);
-  // a new session turns the previous one's snapshot into this.
-  property var lastSession: Model.parseWindows("")
+  // ---- saved windows
+  // What each workspace has saved (`s` in the panel saves it, on demand
+  // only), which of it is open now, and what is open on every workspace.
+  property var windowsInfo: Model.parseWindows("")
   // The workspace a restore is running for, 0 for all, -1 for none.
   property int restoringId: -1
 
@@ -160,7 +167,7 @@ Panel {
     id: windowsProc
     command: [root.cli, "windows", "--json"]
     stdout: StdioCollector {
-      onStreamFinished: if (text.indexOf("\"workspaces\"") !== -1) root.lastSession = Model.parseWindows(text)
+      onStreamFinished: if (text.indexOf("\"workspaces\"") !== -1) root.windowsInfo = Model.parseWindows(text)
     }
   }
 
@@ -181,26 +188,33 @@ Panel {
     }
   }
 
-  // `s` in the panel: a snapshot now, for the minute before a reboot.
-  property bool saving: false
+  // `s` saves the workspace's windows as its setup, replacing what it had;
+  // Forget drops it. The workspace being saved, -1 for none.
+  property int savingId: -1
 
-  function saveNow() {
+  function saveWindows(id) {
     if (saveProc.running) return
-    root.saving = true
+    root.savingId = id
+    saveProc.command = [root.cli, "save", "--ws", String(id)]
+    saveProc.running = true
+  }
+
+  function forgetWindows(id) {
+    if (saveProc.running) return
+    root.savingId = id
+    saveProc.command = [root.cli, "forget", "--ws", String(id)]
     saveProc.running = true
   }
 
   Process {
     id: saveProc
-    command: [root.cli, "save"]
     onExited: {
-      root.saving = false
+      root.savingId = -1
       root.refreshWindows()
     }
   }
 
-  // Ages in the panel ("2 min ago") follow the clock while it is open, and
-  // the snapshot is re-read so the auto-save line stays true.
+  // Ages in the panel ("2 h ago") follow the clock while it is open.
   property real now: Date.now() / 1000
 
   Timer {
@@ -270,6 +284,36 @@ Panel {
     return null
   }
   readonly property int monitorActiveId: hyprMonitor && hyprMonitor.activeWorkspace ? hyprMonitor.activeWorkspace.id : -1
+
+  // This monitor's block of ten workspace ids, as Omarchy assigned it: the
+  // laptop panel 1-10, the next monitor 11-20 (see Model.SLOTS). Read from
+  // the file Hyprland keeps them in, the way the stock workspaces widget does.
+  property var blocks: ({})
+  // Every monitor Omarchy has seen, unplugged ones too (Model.parseScreens).
+  property var screens: []
+
+  FileView {
+    path: (Quickshell.env("XDG_STATE_HOME") || (root.home + "/.local/state")) + "/omarchy/monitor-workspaces"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      root.blocks = Model.parseBlocks(text())
+      root.screens = Model.parseScreens(text())
+    }
+    onLoadFailed: {
+      root.blocks = ({})
+      root.screens = []
+    }
+  }
+
+  // Until Hyprland has written the file, the workspace this monitor shows is
+  // in its own block.
+  readonly property int block: {
+    var known = root.blocks[root.screenName]
+    if (known !== undefined) return known
+    return monitorActiveId > 0 ? Model.blockOf(monitorActiveId) : 0
+  }
   // Only the focused monitor's instance answers IPC, so SUPER+ALT+P opens the
   // panel where you are.
   readonly property bool onFocusedMonitor: Hyprland.focusedMonitor !== null && Hyprland.focusedMonitor.name === screenName
@@ -279,6 +323,58 @@ Panel {
     for (var i = 0; i < values.length; i++)
       if (values[i].id === id) return values[i]
     return null
+  }
+
+  // Monitor glyphs (laptop, external) and short names, shown only with more
+  // than one monitor.
+  readonly property var monitorBadges: {
+    var values = Hyprland.monitors.values
+    var list = []
+    for (var i = 0; i < values.length; i++) {
+      var ipc = values[i].lastIpcObject || {}
+      list.push({ name: values[i].name, make: ipc.make || "", model: ipc.model || "" })
+    }
+    return Model.monitorBadges(list)
+  }
+  readonly property bool multiMonitor: Hyprland.monitors.values.length > 1
+  // Whether some monitor needs its name beside its glyph.
+  readonly property bool monitorNamed: {
+    for (var n in monitorBadges) if (monitorBadges[n].text !== monitorBadges[n].icon) return true
+    return false
+  }
+
+  // The monitor a workspace is on, as { icon, label, text }; null for one
+  // that has no windows and is not shown anywhere (it opens where you are).
+  function monitorFor(id) {
+    var name = workspaceMonitorName(workspaceById(id))
+    if (!name) return null
+    return monitorBadges[name] || { icon: "\uf108", label: name, text: "\uf108 " + name }
+  }
+
+  function focusWindow(address) {
+    if (!address || !root.bar) return
+    root.bar.run("hyprctl dispatch 'hl.dsp.focus({ window = \"address:" + address + "\" })'")
+    root.close()
+  }
+
+  // While the panel is open, the windows it shows follow Hyprland: opening,
+  // closing and moving windows re-read them, a beat later so a burst of
+  // events reads once.
+  Connections {
+    target: Hyprland
+    enabled: root.opened
+    function onRawEvent(event) {
+      var n = event.name
+      if (n === "openwindow" || n === "closewindow" || n === "movewindow" || n === "movewindowv2"
+          || n === "changefloatingmode" || n === "moveworkspace" || n === "moveworkspacev2" || n === "fullscreen")
+        liveTimer.restart()
+    }
+  }
+
+  Timer {
+    id: liveTimer
+    interval: 300
+    onTriggered: root.refreshWindows()
   }
 
   function windowCount(id) {
@@ -323,7 +419,85 @@ Panel {
         windows: w.toplevels.values.length
       })
     }
-    return Model.stripIds(snapshot, screenName, monitorActiveId)
+    return Model.stripIds(snapshot, screenName, monitorActiveId, root.block)
+  }
+
+  // The panel's rows: this monitor's ten, then any workspace visiting from an
+  // unplugged monitor.
+  // ---- the screen the panel shows
+  // The panel has a tab per screen, so one monitor's panel can set up
+  // another's workspaces. It opens on its own; `[` and `]` or a click switch.
+  readonly property var screenTabs: {
+    var used = Object.keys(root.spaces.attachments).concat(Object.keys(root.names)).map(Number)
+    var tabs = Model.screenTabs(root.screens, root.monitorBadges, used)
+    // Until Hyprland has written the file, this monitor is the only tab.
+    if (!Model.tabFor(tabs, root.block)) {
+      var badge = root.monitorBadges[root.screenName] || { icon: "\uf108", label: root.screenName }
+      tabs = tabs.concat([{ block: root.block, connector: root.screenName, plugged: true, icon: badge.icon, label: badge.label }])
+    }
+    return tabs
+  }
+  // -1 follows this monitor's own block.
+  property int viewBlock: -1
+  readonly property int shownBlock: viewBlock >= 0 && Model.tabFor(screenTabs, viewBlock) ? viewBlock : block
+  readonly property var shownTab: Model.tabFor(screenTabs, shownBlock)
+  readonly property bool shownPlugged: shownTab ? shownTab.plugged : true
+
+  function monitorByName(name) {
+    var values = Hyprland.monitors.values
+    for (var i = 0; i < values.length; i++)
+      if (values[i].name === name) return values[i]
+    return null
+  }
+
+  // The connector showing a block now, or "" while its monitor is unplugged.
+  function connectorFor(block) {
+    if (block === root.block && root.screenName) return root.screenName
+    var tab = Model.tabFor(root.screenTabs, block)
+    return tab && tab.plugged ? tab.connector : ""
+  }
+
+  readonly property int viewActiveId: {
+    if (shownBlock === block) return monitorActiveId
+    var m = monitorByName(connectorFor(shownBlock))
+    return m && m.activeWorkspace ? m.activeWorkspace.id : -1
+  }
+
+  // The panel's rows: the shown screen's ten, then any workspace visiting it
+  // from an unplugged monitor.
+  readonly property var rowIds: {
+    if (shownBlock === block) return Model.panelIds(root.block, root.ids)
+    var connector = connectorFor(shownBlock)
+    var _monitors = Hyprland.monitors.values
+    var values = Hyprland.workspaces.values
+    var here = []
+    for (var i = 0; i < values.length; i++)
+      if (values[i] && connector && workspaceMonitorName(values[i]) === connector) here.push(values[i].id)
+    return Model.panelIds(shownBlock, here)
+  }
+
+  function showScreen(block) {
+    root.viewBlock = block
+    root.editingId = -1
+    root.cursorId = rowIds.indexOf(viewActiveId) !== -1 ? viewActiveId : rowIds[0]
+  }
+
+  function switchScreen(step) {
+    if (screenTabs.length > 1) showScreen(Model.nextTab(screenTabs, shownBlock, step))
+  }
+
+  // Selects a workspace, on whichever screen's tab holds it.
+  function showRow(id) {
+    var block = Model.blockOf(id)
+    if (Model.tabFor(screenTabs, block)) showScreen(block)
+    root.cursorId = id
+  }
+
+  readonly property string screenLabel: shownTab ? shownTab.label : ""
+
+  function screenOf(block) {
+    var tab = Model.tabFor(root.screenTabs, block)
+    return tab ? tab.label : ""
   }
 
   // The active workspace holds the collapsed slot. When it is a special one
@@ -332,12 +506,25 @@ Panel {
   readonly property var otherIds: ids.filter(function(id) { return id !== root.primaryId })
 
   // Quattro's dispatch takes Lua; the classic `dispatch workspace N` is a
-  // parse error. Same call the stock Workspaces widget makes.
+  // parse error. Same calls the stock Workspaces widget makes: one of this
+  // monitor's own goes through Omarchy, so it opens here, not wherever focus is.
   function focusWorkspace(id) {
-    if (root.bar) root.bar.run("hyprctl dispatch 'hl.dsp.focus({ workspace = \"" + id + "\" })'")
+    if (!root.bar) return
+    var connector = connectorFor(Model.blockOf(id))
+    if (connector)
+      root.bar.run("hyprctl dispatch 'o.workspaces.focus(" + Model.slotOf(id) + ", \"" + connector + "\")'")
+    else if (workspaceById(id))
+      root.bar.run("hyprctl dispatch 'hl.dsp.focus({ workspace = \"" + id + "\" })'")
+  }
+
+  // A workspace of an unplugged screen can only be gone to while it is open
+  // somewhere, visiting another monitor.
+  function canGo(id) {
+    return connectorFor(Model.blockOf(id)) !== "" || workspaceById(id) !== null
   }
 
   function goTo(id) {
+    if (!canGo(id)) return
     focusWorkspace(id)
     root.close()
   }
@@ -393,7 +580,9 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // Same token the clock label uses, so both track shell.toml's font base-size.
   readonly property int fontSize: Style.font.body
-  readonly property int gap: 6
+  // Between workspaces: well over the dot-to-name spacing inside a label, so
+  // a dot reads as its own workspace's, not the one before.
+  readonly property int gap: Style.space(14)
 
   implicitWidth: vertical ? barSize : stripRow.implicitWidth + 4
   implicitHeight: vertical ? stripColumn.implicitHeight + 4 : barSize
@@ -413,7 +602,7 @@ Panel {
     Row {
       id: content
       anchors.centerIn: parent
-      spacing: Style.space(5)
+      spacing: Style.space(3)
       rotation: root.vertical ? -90 : 0
 
       ProjectspaceDot {
@@ -615,9 +804,11 @@ Panel {
     if (opened) {
       panel.ensureContent()
       editingId = -1
-      if (!cursorPinned) cursorId = monitorActiveId > 0 && monitorActiveId <= 10 ? monitorActiveId : 1
+      viewBlock = -1
+      if (!cursorPinned) cursorId = rowIds.indexOf(monitorActiveId) !== -1 ? monitorActiveId : rowIds[0]
       cursorPinned = false
       now = Date.now() / 1000
+      Hyprland.refreshMonitors()
       refresh()
     } else {
       editingId = -1
@@ -635,9 +826,10 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { root.refresh(); return "ok" }
+    function renumber(pairs: string): string { root.renumberNames(pairs); return "ok" }
     // What the bar knows, for scripts and for checking it from a terminal.
     function state(): string {
-      return JSON.stringify({ monitor: root.screenName, active: root.monitorActiveId, strip: root.ids, attachments: root.spaces.attachments, projectspaces: root.spaces.projectspaces.map(function(p) { return p.name }) })
+      return JSON.stringify({ monitor: root.screenName, block: root.block, active: root.monitorActiveId, strip: root.ids, shown: root.shownBlock, tabs: root.screenTabs.map(function(t) { return t.label }), rows: root.rowIds, names: root.names, attachments: root.spaces.attachments, projectspaces: root.spaces.projectspaces.map(function(p) { return p.name }) })
     }
   }
 
@@ -651,7 +843,7 @@ Panel {
     focusTarget: panel.loadedContent
     // Workspaces on the left, the selected one's details on the right; a
     // screen too narrow for both stacks them (PanelContent.wide).
-    contentWidth: panel.fittedContentWidth(Style.space(780))
+    contentWidth: panel.fittedContentWidth(Style.space(840))
     contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(960))
 
     content: PanelContent {

@@ -42,15 +42,20 @@ Projectspaces
   exec [--ws N | --name P] -- CMD Run CMD with that env, from the projectspace home
 
 Attachments
-  attach <ws> <name|path>         Attach workspace <ws> (1-10) to a projectspace
+  attach <ws> <name|path>         Attach workspace <ws> to a projectspace
   detach <ws>                     Detach workspace <ws>
+  renumber <from>:<to>...         Carry workspaces' attachments, saved windows and
+                                  names to new ids (run by the Hyprland binds when
+                                  Omarchy renumbers a workspace)
 
 Windows
-  save [--auto]                   Snapshot the windows on workspaces 1-10 (runs every
-                                  minute from Hyprland)
-  windows [--json]                The last session's windows, and which are not open now
-  restore [--ws N] [--dry-run]    Reopen the last session's windows that are not open
-                                  now, each on its own workspace (default: all)
+  save [--ws N]                   Save the workspace's windows (default: the active one),
+                                  replacing what it had saved
+  forget [--ws N]                 Drop the workspace's saved windows
+  windows [--json]                The saved windows, and which are not open now
+                                  (--json adds what is open now, with its layout)
+  restore [--ws N] [--dry-run]    Reopen the saved windows that are not open now, each
+                                  on its own workspace (default: every saved workspace)
 
 Session
   launch -- <uwsm-app args>       Used by the uwsm-app shim: launch with the active
@@ -83,7 +88,9 @@ has_mise_config() {
 expand_home() { local p=$1; [[ $p == "~" || $p == "~/"* ]] && p=$HOME${p:1}; echo "$p"; }
 contract_home() { local p=$1; [[ $p == "$HOME" || $p == "$HOME/"* ]] && p="~${p#"$HOME"}"; echo "$p"; }
 
-valid_ws() { [[ $1 =~ ^([1-9]|10)$ ]]; }
+# Omarchy numbers each monitor's workspaces in a block of ten: 1-10 on the
+# laptop panel, 11-20 on the next monitor, and so on. An id is any of them.
+valid_ws() { [[ $1 =~ ^[1-9][0-9]{0,3}$ ]]; }
 
 active_workspace() {
   if [[ -n ${OMAPROJECTSPACE_WORKSPACE:-} ]]; then
@@ -106,6 +113,23 @@ attachments_expanded() {
   attachments_json | jq -c --arg h "$HOME" 'map_values(if startswith("~") then $h + .[1:] else . end)'
 }
 
+# Whether the focused monitor shows Omarchy's Quake console (special:qconsole).
+# A special workspace is never the active one, so it is asked for separately.
+qconsole_open() {
+  hyprctl -j monitors 2>/dev/null |
+    jq -e 'any(.[]; .focused and .specialWorkspace.name == "special:qconsole")' >/dev/null 2>&1
+}
+
+# The "qconsole" key of the attachments file: "none", a home (expanded), or
+# nothing when the console should follow the workspace.
+qconsole_home() {
+  local home
+  [[ -s $ATTACHMENTS ]] || return 0
+  home=$(jq -r '.qconsole // empty' "$ATTACHMENTS" 2>/dev/null)
+  [[ -z $home || $home == none ]] && { echo "$home"; return 0; }
+  expand_home "$home"
+}
+
 # The home attached to a workspace, expanded, or nothing.
 attached_home() {
   local ws=$1 home
@@ -121,10 +145,13 @@ write_attachments() {
   mkdir -p "$CONFIG_DIR"
   (
     flock 9
-    local current tmp
+    local current other tmp
     current=$(attachments_json)
+    # Keys other than the workspaces (qconsole) are hand-edited; keep them.
+    other=$({ [[ -s $ATTACHMENTS ]] && jq -c 'del(.version, .workspaces)' "$ATTACHMENTS" 2>/dev/null; } || echo '{}')
     tmp=$(mktemp "$ATTACHMENTS.XXXXXX")
-    jq -n --argjson ws "$current" "$@" "{version: 1, workspaces: (\$ws | $filter)}" >"$tmp"
+    jq -n --argjson ws "$current" --argjson other "$other" "$@" \
+      "{version: 1} + \$other + {workspaces: (\$ws | $filter)}" >"$tmp"
     mv "$tmp" "$ATTACHMENTS"
   ) 9>"$CONFIG_DIR/.lock"
   # Live bars pick the change up through their file watch too; this is the
@@ -346,7 +373,7 @@ cmd_exec() {
 # shellcheck disable=SC2016  # jq filters, expanded by jq
 cmd_attach() {
   (($# == 2)) || die "usage: omaprojectspace attach <ws> <name|path>"
-  valid_ws "$1" || die "workspace must be 1-10, got '$1'"
+  valid_ws "$1" || die "workspace must be a number from 1, got '$1'"
   local home
   home=$(resolve "$2")
   write_attachments '.[$k] = $v' --arg k "$1" --arg v "$(contract_home "$home")"
@@ -356,9 +383,54 @@ cmd_attach() {
 # shellcheck disable=SC2016
 cmd_detach() {
   (($# == 1)) || die "usage: omaprojectspace detach <ws>"
-  valid_ws "$1" || die "workspace must be 1-10, got '$1'"
+  valid_ws "$1" || die "workspace must be a number from 1, got '$1'"
   write_attachments 'del(.[$k])' --arg k "$1"
   echo "workspace $1 detached"
+}
+
+# Re-keys a {"<ws>": ...} object by a {"<from>": "<to>"} map, all at once.
+# Whatever sat under a target id moves to the id its newcomer left, so two
+# workspaces trading ids trade their entries and nothing is lost.
+# shellcheck disable=SC2016  # a jq program, expanded by jq
+RENUMBER_JQ='
+  . as $o
+  | ($map | to_entries | map({key: .value, value: .key}) | from_entries) as $back
+  | reduce ($o | keys[] | select($map[.])) as $k ({}; .[$map[$k]] = $o[$k])
+  | reduce ($o | keys[] | select($map[.] | not)) as $k (.;
+      if $back[$k] then (if .[$back[$k]] == null then .[$back[$k]] = $o[$k] else . end)
+      else .[$k] = $o[$k] end)'
+
+# Omarchy renumbers a workspace when it joins another monitor's block, and
+# Hyprland reports none of it. hypr/omaprojectspace.lua notices and calls this,
+# so what is attached, saved and named follows the workspace to its new id.
+cmd_renumber() {
+  (($#)) || die "usage: omaprojectspace renumber <from>:<to>..."
+  local pair from to map='{}'
+  for pair in "$@"; do
+    from=${pair%%:*} to=${pair#*:}
+    if [[ $pair != *:* ]] || ! valid_ws "$from" || ! valid_ws "$to"; then
+      die "renumber takes <from>:<to> workspace numbers, got '$pair'"
+    fi
+    if [[ $from != "$to" ]]; then map=$(jq -c --arg f "$from" --arg t "$to" '. + {($f): $t}' <<<"$map"); fi
+  done
+  [[ $map != '{}' ]] || return 0
+  jq -e '[.[]] | length == (unique | length)' <<<"$map" >/dev/null || die "renumber: two workspaces onto one id"
+
+  local current
+  current=$(attachments_json)
+  # shellcheck disable=SC2016
+  [[ $(jq -c --argjson map "$map" "$RENUMBER_JQ" <<<"$current") == "$(jq -c . <<<"$current")" ]] \
+    || write_attachments "$RENUMBER_JQ" --argjson map "$map"
+  if [[ $(saved_json) != '{}' ]]; then
+    mkdir -p "$CONFIG_DIR"
+    (
+      flock 9
+      write_saved "$(jq -c --argjson map "$map" "$RENUMBER_JQ" <<<"$(saved_json)")"
+    ) 9>"$CONFIG_DIR/.windows.lock"
+  fi
+  # Names are the bar's own settings, so the bar carries them.
+  omarchy-shell -q mehiel.omaprojectspace renumber "$(jq -r 'to_entries | map("\(.key):\(.value)") | join(" ")' <<<"$map")" >/dev/null 2>&1 || true
+  jq -r 'to_entries[] | "workspace \(.key) → \(.value)"' <<<"$map"
 }
 
 notify() {
@@ -401,11 +473,19 @@ cmd_launch() {
 
   local ws home
   ws=$(active_workspace || true)
+  home=""
+  # The Quake console keeps one projectspace whatever workspace is under it:
+  # "none" for none, a folder for that one. Without the key it follows the
+  # workspace like any other launch. A launch pinned to a workspace (restore)
+  # is never the console's.
+  if [[ -z ${OMAPROJECTSPACE_WORKSPACE:-} ]] && qconsole_open; then
+    home=$(qconsole_home)
+    [[ $home == none ]] && home="" && ws=""
+  fi
   # The app itself must not keep it: whatever it launches later belongs to
   # whichever workspace is active then.
   unset OMAPROJECTSPACE_WORKSPACE
-  home=""
-  [[ -n $ws ]] && home=$(attached_home "$ws")
+  [[ -z $home && -n $ws ]] && home=$(attached_home "$ws")
 
   # A launch from an unattached workspace never inherits a projectspace the
   # caller happened to carry.
@@ -462,20 +542,19 @@ cmd_browser() {
 
 # ------------------------------------------------------------- windows
 #
-# A snapshot records, per workspace, what it takes to open each window again:
-# a terminal's folder and the session it ran (herdr, tmux, zellij), the
-# browser, or an app's desktop entry. Hyprland runs `save --auto` every
-# minute into session.json. The first save of a new Hyprland instance moves
-# the old file to last-session.json, which is what `restore` reads.
+# `save` records, for one workspace, what it takes to open each of its
+# windows again: a terminal's folder and the session it runs (herdr, tmux,
+# zellij), the browser, or an app's desktop entry. Saving is on demand only,
+# so a workspace's save is the setup you chose, not whatever happened to be
+# open. `restore` reopens what is missing from it.
 
-SESSION_FILE=$STATE_DIR/session.json
-LAST_FILE=$STATE_DIR/last-session.json
+SAVED_FILE=$CONFIG_DIR/windows.json
 TERMINALS=" foot Alacritty kitty com.mitchellh.ghostty org.wezfurlong.wezterm "
 RESUMABLE=" herdr tmux zellij "
 BROWSER_CLASSES='^(google-chrome(-beta|-unstable)?|[Cc]hromium|brave-browser|microsoft-edge|vivaldi-stable|helium|firefox|zen)$'
 RESTORE_TIMEOUT=${OMAPROJECTSPACE_RESTORE_TIMEOUT:-15}
 
-# The Hyprland instance a snapshot belongs to.
+# The Hyprland session, so a login restore happens once per session.
 instance_id() { echo "${OMAPROJECTSPACE_INSTANCE:-${HYPRLAND_INSTANCE_SIGNATURE:-}}"; }
 
 # id<TAB>StartupWMClass<TAB>Name<TAB>Exec for every visible desktop entry,
@@ -574,7 +653,7 @@ resumable_argv() {
   echo "$argv"
 }
 
-# The windows open now on workspaces 1-10, as restorable entries:
+# The windows open now on regular workspaces, as restorable entries:
 # {ws, address, kind, class, dir?, command?, desktop?, name}. Windows nothing
 # can reopen come out as kind "unknown".
 live_windows() {
@@ -600,76 +679,89 @@ live_windows() {
         jq -nc --argjson ws "$ws" --arg a "$address" --arg c "$class" '{ws: $ws, address: $a, kind: "unknown", class: $c, name: $c}'
       fi
     fi
-  done < <(jq -r '.[] | select(.workspace.id >= 1 and .workspace.id <= 10 and .mapped != false)
+  done < <(jq -r '.[] | select(.workspace.id >= 1 and .mapped != false)
     | [.workspace.id, .address, (.initialClass // .class), .pid] | map(tostring) | join("\u001f")' <<<"$clients")
 }
 
-# Live windows → a snapshot: grouped by workspace, one browser per
-# workspace, one window per app, every terminal.
-snapshot_json() {
-  local live=$1
-  jq -sc --arg inst "$(instance_id)" --argjson now "$(date +%s)" --argjson att "$(attachments_json)" '
-    map(select(.kind != "unknown")) as $known
-    | {
-        version: 1, instance: $inst, saved: $now,
-        workspaces: ($known | group_by(.ws) | map({
-          key: (.[0].ws | tostring),
-          value: {
-            projectspace: ($att[.[0].ws | tostring] // null),
-            windows: (reduce .[] as $w ([];
-              if $w.kind == "terminal" then . + [$w]
-              elif any(.[]; .kind == $w.kind and .class == $w.class) then .
-              else . + [$w] end) | map(del(.ws, .address)))
-          }
-        }) | from_entries)
-      }' <<<"$live"
+# One workspace's live windows → its save: one browser, one window per app,
+# every terminal.
+workspace_snapshot() {
+  local live=$1 ws=$2
+  jq -sc --argjson ws "$ws" --argjson now "$(date +%s)" --arg p "$(attachments_json | jq -r --arg ws "$ws" '.[$ws] // empty')" '
+    {
+      saved: $now,
+      projectspace: (if $p == "" then null else $p end),
+      windows: (reduce (.[] | select(.ws == $ws and .kind != "unknown")) as $w ([];
+        if $w.kind == "terminal" then . + [$w]
+        elif any(.[]; .kind == $w.kind and .class == $w.class) then .
+        else . + [$w] end) | map(del(.ws, .address)))
+    }' <<<"$live"
 }
 
-windows_count() { jq '[.workspaces[]?.windows[]?] | length' "$1" 2>/dev/null || echo 0; }
+saved_json() { [[ -s $SAVED_FILE ]] && jq -c '.workspaces // {}' "$SAVED_FILE" 2>/dev/null || echo '{}'; }
+
+# Writes the saves (a {"7": {...}} object) under the config lock.
+write_saved() {
+  local tmp
+  mkdir -p "$CONFIG_DIR"
+  tmp=$(mktemp "$SAVED_FILE.XXXXXX")
+  jq '{version: 1, workspaces: .}' <<<"$1" >"$tmp"
+  mv "$tmp" "$SAVED_FILE"
+}
+
+ws_option() {
+  local ws=""
+  while (($#)); do
+    case $1 in
+    --ws) ws=${2:-}; shift 2 ;;
+    *) die "unknown option $1" ;;
+    esac
+  done
+  [[ -n $ws ]] || ws=$(active_workspace)
+  valid_ws "$ws" || die "workspace must be a number from 1, not '$ws'"
+  echo "$ws"
+}
 
 cmd_save() {
-  local auto=false inst live snap
-  [[ ${1:-} == --auto ]] && auto=true
-  inst=$(instance_id)
-  [[ -n $inst ]] || die "not in a Hyprland session"
-  mkdir -p "$STATE_DIR"
+  local ws live snap count
+  ws=$(ws_option "$@")
   live=$(live_windows)
-  snap=$(snapshot_json "$live")
+  snap=$(workspace_snapshot "$live" "$ws")
+  count=$(jq '.windows | length' <<<"$snap")
+  if ((count == 0)); then
+    local unknown
+    unknown=$(jq -r --argjson ws "$ws" 'select(.ws == $ws and .kind == "unknown") | .class' <<<"$live" | sort -u | paste -sd, - | sed 's/,/, /g')
+    [[ -n $unknown ]] && die "nothing to save on workspace $ws: no desktop entry reopens $unknown"
+    die "nothing to save on workspace $ws: it has no windows"
+  fi
+  mkdir -p "$CONFIG_DIR"
   (
     flock 9
-    local prev_inst="" count
-    [[ -s $SESSION_FILE ]] && prev_inst=$(jq -r '.instance // ""' "$SESSION_FILE" 2>/dev/null || true)
-    if [[ -n $prev_inst && $prev_inst != "$inst" ]]; then
-      # A new session: what the last one had open becomes restorable. An
-      # empty snapshot (a session that ended before saving anything) never
-      # replaces a real one.
-      if (($(windows_count "$SESSION_FILE") > 0)); then mv "$SESSION_FILE" "$LAST_FILE"; else rm -f "$SESSION_FILE"; fi
-      prev_inst=""
-    fi
-    count=$(jq '[.workspaces[].windows[]] | length' <<<"$snap")
-    # Logging out closes every window before Hyprland exits. An automatic
-    # save that sees none keeps the snapshot from before.
-    if $auto && ((count == 0)) && [[ -n $prev_inst ]] && (($(windows_count "$SESSION_FILE") > 0)); then
-      exit 0
-    fi
-    local tmp
-    tmp=$(mktemp "$SESSION_FILE.XXXXXX")
-    echo "$snap" >"$tmp"
-    mv "$tmp" "$SESSION_FILE"
-  ) 9>"$STATE_DIR/.lock"
-  $auto && return 0
-  jq -r '"Saved \([.workspaces[].windows[]] | length) windows" + (if (.workspaces | length) > 0 then " on workspace" + (if (.workspaces | length) > 1 then "s " else " " end) + (.workspaces | keys_unsorted | map(tonumber) | sort | map(tostring) | join(", ")) else "" end) + "."' <<<"$snap"
-  jq -r 'select(.kind == "unknown") | "  can'"'"'t reopen \(.class) on workspace \(.ws): no desktop entry"' <<<"$live" | sort -u
+    write_saved "$(jq -c --arg k "$ws" --argjson v "$snap" '. + {($k): $v}' <<<"$(saved_json)")"
+  ) 9>"$CONFIG_DIR/.windows.lock"
+  echo "Saved $count window$( ((count == 1)) || echo s) on workspace $ws."
+  jq -r --argjson ws "$ws" 'select(.ws == $ws and .kind == "unknown") | "  can'"'"'t reopen \(.class): no desktop entry"' <<<"$live" | sort -u
 }
 
-# The last session's windows, each marked with whether it is open now. A
+cmd_forget() {
+  local ws
+  ws=$(ws_option "$@")
+  mkdir -p "$CONFIG_DIR"
+  (
+    flock 9
+    write_saved "$(jq -c --arg k "$ws" 'del(.[$k])' <<<"$(saved_json)")"
+  ) 9>"$CONFIG_DIR/.windows.lock"
+  echo "Forgot workspace $ws's saved windows."
+}
+
+# The saved windows, each marked with whether it is open now. A
 # terminal counts as open when one with the same folder and session is; the
 # browser when any browser window is on that workspace; an app when its
 # window is anywhere (elsewhere gives `elsewhere: <ws>`).
 restore_plan() {
   local live=$1
   jq -c --argjson live "$(jq -sc . <<<"$live")" '
-    .workspaces // {} | to_entries | map(
+    to_entries | map(
       (.key | tonumber) as $ws
       | ($live | map(select(.ws == $ws))) as $here
       | .value + {ws: $ws, windows: (
@@ -689,38 +781,48 @@ restore_plan() {
                 else .out += [$w + {open: false}] end
             end) | .out)}
       | . + {missing: ([.windows[] | select(.open | not)] | length)}
-    ) | sort_by(.ws)' "$LAST_FILE"
+    ) | sort_by(.ws)' <<<"$(saved_json)"
 }
 
-# This session's snapshot, so the panel can show that auto-save is running:
-# {saved, windows, workspaces}, or null before the first save.
-current_json() {
-  jq -c --arg i "$(instance_id)" 'select(.instance == $i)
-    | {saved, windows: ([.workspaces[].windows[]] | length), workspaces: (.workspaces | length)}' "$SESSION_FILE" 2>/dev/null | grep . || echo null
+# What is open now on regular workspaces, for the panel's details: each
+# workspace's layout, its monitor, and its windows with their geometry, named
+# like the snapshot names them. {"7": {layout, monitor, windows: [...]}}.
+live_json() {
+  local live=$1 batch
+  batch=$(hyprctl -j --batch "clients; workspaces; monitors" 2>/dev/null) && [[ -n $batch ]] || { echo '{}'; return; }
+  jq -sc --argjson live "$(jq -sc . <<<"$live")" '
+    .[0] as $clients | .[1] as $workspaces | .[2] as $monitors
+    | ($live | map({key: .address, value: .}) | from_entries) as $info
+    | [$workspaces[] | select(.id >= 1) | . as $w
+        | {key: (.id | tostring), value: {
+            layout: (.tiledLayout // ""),
+            monitor: ([$monitors[] | select(.name == $w.monitor)
+              # Logical size, as window positions are: scaled, and turned
+              # for a rotated output.
+              | {name, x, y, width: ((if .transform % 2 == 1 then .height else .width end) / .scale),
+                 height: ((if .transform % 2 == 1 then .width else .height end) / .scale), reserved}][0] // null),
+            windows: ([$clients[] | select(.workspace.id == $w.id and .mapped != false and .hidden != true)
+              | ($info[.address] // {}) as $i
+              | {address, title, at, size, floating, fullscreen: (.fullscreen > 0), focus: .focusHistoryID,
+                 kind: ($i.kind // "unknown"), name: ($i.name // .class)}]
+              | sort_by(.floating, .at[0], .at[1]))
+          }}] | from_entries' <<<"$batch" 2>/dev/null || echo '{}'
 }
 
 cmd_windows() {
-  local json=false plan live current uptime
+  local json=false plan live
   [[ ${1:-} == --json ]] && json=true
-  current=$(current_json)
-  uptime=$(session_age 2>/dev/null || true)
-  if [[ ! -s $LAST_FILE ]]; then
-    if $json; then
-      jq -nc --argjson c "$current" --argjson u "${uptime:-null}" '{saved: null, workspaces: [], current: $c, uptime: $u}'
-    else
-      echo "No previous session saved yet. Windows are saved every minute; after the next login they can be restored."
-    fi
-    return
-  fi
   live=$(live_windows)
   plan=$(restore_plan "$live")
   if $json; then
-    jq -c --argjson plan "$plan" --argjson c "$current" --argjson u "${uptime:-null}" \
-      '{saved: .saved, workspaces: $plan, current: $c, uptime: $u}' "$LAST_FILE"
+    jq -nc --argjson plan "$plan" --argjson now "$(live_json "$live")" '{workspaces: $plan, live: $now}'
     return
   fi
-  echo "Last session, saved $(date -d "@$(jq -r .saved "$LAST_FILE")" '+%a %d %b %H:%M'):"
-  jq -r '.[] | "workspace \(.ws)" + (if .projectspace then "  \(.projectspace)" else "" end),
+  if [[ $plan == "[]" ]]; then
+    echo "No saved windows yet. Set a workspace up, then: omaprojectspace save --ws N"
+    return
+  fi
+  jq -r '.[] | "workspace \(.ws)" + (if .projectspace then "  \(.projectspace)" else "" end) + "  (saved \(.saved | strflocaltime("%a %d %b %H:%M")))",
     (.windows[] | "  " + (if .open then (if .elsewhere then "· open on \(.elsewhere)  " else "· open  " end) else "○ " end) + .name)' <<<"$plan"
 }
 
@@ -781,10 +883,10 @@ cmd_restore() {
     *) die "restore: unknown option $1" ;;
     esac
   done
-  [[ -z $only ]] || valid_ws "$only" || die "workspace must be 1-10, not '$only'"
-  if [[ ! -s $LAST_FILE ]]; then
+  [[ -z $only ]] || valid_ws "$only" || die "workspace must be a number from 1, not '$only'"
+  if [[ $(saved_json) == "{}" ]]; then
     $login && return 0
-    echo "Nothing to restore: no previous session saved yet."
+    echo "Nothing to restore: no workspace has saved windows."
     return 0
   fi
   mkdir -p "$STATE_DIR"
@@ -796,19 +898,17 @@ cmd_restore() {
     # or restarting the shell, later in the day reopens nothing.
     local inst age
     inst=$(instance_id)
-    [[ $(jq -r '.restored_instance // ""' "$LAST_FILE") == "$inst" ]] && return 0
+    [[ -n $inst && $(cat "$STATE_DIR/login-restored" 2>/dev/null) != "$inst" ]] || return 0
     age=$(session_age || true)
     [[ -n $age ]] && ((age < ${OMAPROJECTSPACE_LOGIN_WINDOW:-300})) || return 0
-    local tmp
-    tmp=$(mktemp "$LAST_FILE.XXXXXX")
-    jq --arg i "$inst" '.restored_instance = $i' "$LAST_FILE" >"$tmp" && mv "$tmp" "$LAST_FILE"
+    echo "$inst" >"$STATE_DIR/login-restored"
   fi
 
   local plan todo
   plan=$(restore_plan "$(live_windows)")
   todo=$(jq -c --arg only "$only" '.[] | select($only == "" or .ws == ($only | tonumber)) | .ws as $ws | .windows[] | select(.open | not) | . + {ws: $ws}' <<<"$plan")
   if [[ -z $todo ]]; then
-    local msg="Everything from the last session is already open."
+    local msg="Everything saved is already open."
     $notify_done && ! $login && notify "Nothing to restore" "$msg"
     $login || echo "$msg"
     return 0
@@ -943,10 +1043,9 @@ cmd_doctor() {
 
   echo "Windows"
   local saved
-  saved=$(jq -r --arg i "$(instance_id)" 'select(.instance == $i) | .saved' "$SESSION_FILE" 2>/dev/null || true)
-  if [[ -n $saved ]] && (($(date +%s) - saved < 180)); then ok "saved every minute ($(contract_home "$SESSION_FILE"))"
-  else warn "windows are not being saved: reload Hyprland (hyprctl reload) after install"; fi
-  if [[ -s $LAST_FILE ]]; then ok "last session: $(windows_count "$LAST_FILE") windows to restore from"; fi
+  saved=$(saved_json)
+  if [[ $saved == "{}" ]]; then ok "no saved windows yet (omaprojectspace save --ws N)"
+  else ok "saved windows on workspace$(jq -r 'if length > 1 then "s " else " " end + (keys | map(tonumber) | sort | map(tostring) | join(", "))' <<<"$saved") ($(contract_home "$SAVED_FILE"))"; fi
 
   echo "Projectspaces"
   local data
@@ -974,9 +1073,11 @@ main() {
   exec) cmd_exec "$@" ;;
   attach) cmd_attach "$@" ;;
   detach) cmd_detach "$@" ;;
+  renumber) cmd_renumber "$@" ;;
   launch) cmd_launch "$@" ;;
   browser) cmd_browser "$@" ;;
   save) cmd_save "$@" ;;
+  forget) cmd_forget "$@" ;;
   windows) cmd_windows "$@" ;;
   restore) cmd_restore "$@" ;;
   install) cmd_install "$@" ;;

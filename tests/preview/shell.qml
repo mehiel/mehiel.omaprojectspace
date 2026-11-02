@@ -21,8 +21,8 @@ ShellRoot {
   readonly property var script: {
     try { return JSON.parse(Quickshell.env("PREVIEW_SCRIPT") || "[]") } catch (e) { return [] }
   }
-  // The real panel caps its card at Style.space(780); PREVIEW_WIDTH narrows it.
-  readonly property int panelWidth: Number(Quickshell.env("PREVIEW_WIDTH")) || Style.space(780)
+  // The real panel caps its card at Style.space(840); PREVIEW_WIDTH narrows it.
+  readonly property int panelWidth: Number(Quickshell.env("PREVIEW_WIDTH")) || Style.space(840)
   readonly property var settings: {
     try { return JSON.parse(Quickshell.env("PREVIEW_SETTINGS") || "{}") } catch (e) { return {} }
   }

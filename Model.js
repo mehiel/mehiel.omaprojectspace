@@ -4,6 +4,140 @@
 
 var WORKSPACE_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
+// Omarchy gives every monitor workspaces 1-10 of its own, numbered in a block
+// of ten per monitor: the laptop panel 1-10, the next monitor 11-20, and so on
+// (default/hypr/monitor-workspaces.lua). Ids stay global everywhere here;
+// only what is shown and typed is the slot within a block.
+var SLOTS = 10
+
+function blockOf(id) {
+  return Math.floor((id - 1) / SLOTS)
+}
+
+function slotOf(id) {
+  return (id - 1) % SLOTS + 1
+}
+
+// A monitor's own ten ids.
+function blockIds(block) {
+  var base = (block > 0 ? block : 0) * SLOTS
+  var ids = []
+  for (var slot = 1; slot <= SLOTS; slot++) ids.push(base + slot)
+  return ids
+}
+
+// Connector -> block, from Omarchy's state file: one "block<TAB>connector<TAB>
+// identity" line per monitor ever seen, the connector empty while unplugged.
+function parseBlocks(text) {
+  var out = {}
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var fields = lines[i].split("\t")
+    if (fields.length >= 3 && fields[1] !== "" && /^[0-9]+$/.test(fields[0])) out[fields[1]] = parseInt(fields[0], 10)
+  }
+  return out
+}
+
+// The panel's rows for a monitor: its own ten, then any workspace visiting it
+// from a monitor that is unplugged, ascending.
+function panelIds(block, guests) {
+  var ids = blockIds(block)
+  var extra = (guests || []).filter(function(id) { return id > 0 && blockOf(id) !== block && ids.indexOf(id) === -1 })
+  extra.sort(function(a, b) { return a - b })
+  return ids.concat(extra)
+}
+
+// Every monitor Omarchy has seen, from the same file: [{ block, connector,
+// identity }] by block, the connector "" while it is unplugged.
+function parseScreens(text) {
+  var out = []
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var fields = lines[i].split("\t")
+    if (fields.length >= 3 && /^[0-9]+$/.test(fields[0]) && fields[2] !== "")
+      out.push({ block: parseInt(fields[0], 10), connector: fields[1], identity: fields.slice(2).join("\t") })
+  }
+  out.sort(function(a, b) { return a.block - b.block })
+  return out
+}
+
+// The panel's screen tabs: [{ block, connector, plugged, icon, label }]. A
+// plugged-in monitor always has one; an unplugged one only while something in
+// its block is attached or named (`used` is those ids), so a screen seen once
+// in a meeting room doesn't linger. `badges` is monitorBadges' output.
+function screenTabs(screens, badges, used) {
+  var tabs = []
+  var list = Array.isArray(screens) ? screens : []
+  var ids = Array.isArray(used) ? used : []
+  for (var i = 0; i < list.length; i++) {
+    var s = list[i]
+    var badge = s.connector ? (badges || {})[s.connector] : null
+    if (s.connector && !badge) continue
+    if (!s.connector && !ids.some(function(id) { return blockOf(id) === s.block })) continue
+    var label = badge ? badge.label : monitorLabels([{ name: "unplugged", make: s.identity }]).unplugged
+    tabs.push({
+      block: s.block, connector: s.connector, plugged: !!s.connector,
+      icon: badge ? badge.icon : MONITOR_GLYPH, label: label
+    })
+  }
+  return tabs
+}
+
+// The tab after (step 1) or before (-1) the one showing `block`, wrapping.
+function nextTab(tabs, block, step) {
+  if (!tabs || tabs.length === 0) return block
+  var at = -1
+  for (var i = 0; i < tabs.length; i++) if (tabs[i].block === block) at = i
+  if (at < 0) return tabs[0].block
+  return tabs[((at + step) % tabs.length + tabs.length) % tabs.length].block
+}
+
+function tabFor(tabs, block) {
+  for (var i = 0; i < (tabs || []).length; i++) if (tabs[i].block === block) return tabs[i]
+  return null
+}
+
+// Workspaces on other monitors attached to the same projectspace as `id`,
+// ascending: the rest of a project spread over several screens.
+function pairedIds(state, id) {
+  var p = projectspaceFor(state, id)
+  if (!p) return []
+  var out = []
+  for (var ws in state.attachments) {
+    var other = Number(ws)
+    if (state.attachments[ws].home === p.home && blockOf(other) !== blockOf(id)) out.push(other)
+  }
+  out.sort(function(a, b) { return a - b })
+  return out
+}
+
+// "9:19 8:18" -> { "9": "19", "8": "18" }; anything malformed is skipped.
+function parseRenumber(text) {
+  var out = {}
+  var pairs = String(text || "").split(/\s+/)
+  for (var i = 0; i < pairs.length; i++) {
+    var m = /^([1-9][0-9]*):([1-9][0-9]*)$/.exec(pairs[i])
+    if (m && m[1] !== m[2]) out[m[1]] = m[2]
+  }
+  return out
+}
+
+// The same re-keying as the CLI's renumber: entries move all at once, and one
+// a newcomer displaces takes the id the newcomer left.
+function renumbered(object, map) {
+  var back = {}
+  for (var from in map) back[map[from]] = from
+  var out = {}
+  var k
+  for (k in object) if (map[k]) out[map[k]] = object[k]
+  for (k in object) {
+    if (map[k]) continue
+    if (back[k]) { if (out[back[k]] === undefined) out[back[k]] = object[k] }
+    else out[k] = object[k]
+  }
+  return out
+}
+
 // Fallback labels, used until a workspace gets a custom name or a
 // projectspace: its number, as the stock workspace switcher shows it.
 var DEFAULT_LABELS = {
@@ -26,9 +160,12 @@ var PALETTE = [
   "#D45FA6"  // magenta
 ]
 
-// The digit a workspace answers to on the keyboard: SUPER+0 is workspace 10.
+// The digit a workspace answers to on the keyboard, within its monitor's
+// block: SUPER+0 is slot 10, so workspace 20 on the second monitor is "0".
 function keyLabel(id) {
-  return id === 10 ? "0" : String(id)
+  if (!(id > 0)) return String(id)
+  var slot = slotOf(id)
+  return slot === SLOTS ? "0" : String(slot)
 }
 
 // FNV-1a: short folder names differ in a letter or two, and a plain
@@ -148,7 +285,13 @@ function labelFor(id, names, state) {
   if (custom) return String(custom)
   var p = projectspaceFor(state, id)
   if (p) return p.name
-  return DEFAULT_LABELS[key] || key
+  return defaultLabel(id)
+}
+
+// A workspace's number as the stock workspace switcher shows it: its slot in
+// its monitor's block.
+function defaultLabel(id) {
+  return id > 0 ? DEFAULT_LABELS[String(slotOf(id))] : String(id)
 }
 
 function labelSource(id, names, state) {
@@ -160,7 +303,7 @@ function labelSource(id, names, state) {
 // The placeholder the name field shows: what the label falls back to.
 function fallbackLabel(id, state) {
   var p = projectspaceFor(state, id)
-  return p ? p.name : (DEFAULT_LABELS[String(id)] || String(id))
+  return p ? p.name : defaultLabel(id)
 }
 
 // The state with one workspace attached to `home`, or detached when it is "".
@@ -227,36 +370,43 @@ function windowsLabel(count) {
 }
 
 // The strip's workspaces for one monitor: its active workspace plus every
-// other occupied one (1–10) that lives there, ascending. `workspaces` is a
-// plain [{ id, monitor, windows }] snapshot.
-function stripIds(workspaces, monitorName, activeId) {
+// other occupied one that lives there, ascending, its own block before any
+// visiting from another. `workspaces` is a plain [{ id, monitor, windows }]
+// snapshot; `block` is the monitor's, when known.
+function stripIds(workspaces, monitorName, activeId, block) {
   var ids = []
   for (var i = 0; i < workspaces.length; i++) {
     var w = workspaces[i]
-    if (!w || w.id <= 0 || w.id > 10) continue
+    if (!w || w.id <= 0) continue
     if (monitorName && w.monitor && w.monitor !== monitorName) continue
     if (w.windows > 0 || w.id === activeId) {
       if (ids.indexOf(w.id) === -1) ids.push(w.id)
     }
   }
-  if (activeId > 0 && activeId <= 10 && ids.indexOf(activeId) === -1) ids.push(activeId)
-  ids.sort(function(a, b) { return a - b })
+  if (activeId > 0 && ids.indexOf(activeId) === -1) ids.push(activeId)
+  var own = block >= 0 ? block : -1
+  ids.sort(function(a, b) {
+    var guestA = own >= 0 && blockOf(a) !== own ? 1 : 0
+    var guestB = own >= 0 && blockOf(b) !== own ? 1 : 0
+    return guestA - guestB || a - b
+  })
   return ids
 }
 
-// Up/down over the ten rows, wrapping.
-function moveCursor(current, step) {
-  var at = WORKSPACE_IDS.indexOf(current)
+// Up/down over the panel's rows, wrapping.
+function moveCursor(current, step, rows) {
+  var list = rows && rows.length ? rows : WORKSPACE_IDS
+  var at = list.indexOf(current)
   if (at < 0) at = 0
-  var next = ((at + step) % WORKSPACE_IDS.length + WORKSPACE_IDS.length) % WORKSPACE_IDS.length
-  return WORKSPACE_IDS[next]
+  var next = ((at + step) % list.length + list.length) % list.length
+  return list[next]
 }
 
-// A typed digit → the workspace it names, or -1.
-function workspaceForKey(text) {
+// A typed digit → the workspace it names in a monitor's block, or -1.
+function workspaceForKey(text, block) {
   if (!/^[0-9]$/.test(String(text || ""))) return -1
   var n = Number(text)
-  return n === 0 ? 10 : n
+  return (block > 0 ? block : 0) * SLOTS + (n === 0 ? SLOTS : n)
 }
 
 // mise names its config in errors; this turns "not trusted" into the fix.
@@ -265,25 +415,23 @@ function trustCommand(projectspace) {
   return projectspace.config ? "mise trust " + projectspace.config : "mise trust " + projectspace.home
 }
 
-// ---- the last session's windows (omaprojectspace windows --json)
+// ---- saved windows (omaprojectspace windows --json)
 
-// { saved, workspaces: [{ ws, projectspace, windows, missing }], byWs, missing }.
-// Anything unreadable is an empty session, so the panel simply hides it.
+// { workspaces: [{ ws, saved, projectspace, windows, missing }], byWs, missing, live }.
+// Anything unreadable is an empty one, so the panel simply shows nothing saved.
 function parseWindows(text) {
-  var empty = { saved: null, workspaces: [], byWs: {}, missing: 0, current: null, uptime: null }
+  var empty = { workspaces: [], byWs: {}, missing: 0, live: {} }
   var data
   try { data = JSON.parse(text || "") } catch (e) { return empty }
   if (!data || !Array.isArray(data.workspaces)) return empty
-  var c = data.current
   var out = {
-    saved: data.saved || null, workspaces: [], byWs: {}, missing: 0,
-    current: c && c.saved > 0 ? { saved: c.saved, windows: Number(c.windows) || 0, workspaces: Number(c.workspaces) || 0 } : null,
-    uptime: data.uptime >= 0 ? data.uptime : null
+    workspaces: [], byWs: {}, missing: 0,
+    live: data.live && typeof data.live === "object" && !Array.isArray(data.live) ? data.live : {}
   }
   for (var i = 0; i < data.workspaces.length; i++) {
     var w = data.workspaces[i]
     if (!w || !(w.ws > 0) || !Array.isArray(w.windows)) continue
-    var entry = { ws: w.ws, projectspace: w.projectspace || null, windows: w.windows, missing: Number(w.missing) || 0 }
+    var entry = { ws: w.ws, saved: w.saved || null, projectspace: w.projectspace || null, windows: w.windows, missing: Number(w.missing) || 0 }
     out.workspaces.push(entry)
     out.byWs[String(w.ws)] = entry
     out.missing += entry.missing
@@ -314,25 +462,140 @@ function savedLabel(saved, now) {
   return days === 1 ? "yesterday" : days + " days ago"
 }
 
-// Auto-save runs every minute; a snapshot older than this means it stopped.
-var AUTOSAVE_STALE = 180
+// ---- what is open now (windows --json's live)
 
-// The footer's auto-save line: { text, stale }. Without a snapshot yet, a
-// session older than the stale mark means the timer never started.
-function autosaveStatus(session, now) {
-  var c = session ? session.current : null
-  if (!c) {
-    var late = session && session.uptime !== null && session.uptime > AUTOSAVE_STALE
-    return { text: late ? "Auto-save isn't running" : "Auto-save starts within a minute", stale: !!late }
+// { layout, monitor, windows: [{ address, title, at, size, floating, kind, name, focus }] }
+// for a workspace with windows, else null.
+function liveFor(session, id) {
+  var entry = session && session.live ? session.live[String(id)] : null
+  return entry && Array.isArray(entry.windows) && entry.windows.length > 0 ? entry : null
+}
+
+// The workspace drawn to fit `width` (and at most `maxHeight`): its monitor's
+// usable area as the view, and every window, in the same scale. A scrolling
+// layout's columns off either side of the screen extend the drawing.
+// { width, height, view: {x,y,w,h} | null, boxes: [{x,y,w,h, address, name, kind, title, focused, floating}] }
+function layoutBoxes(entry, width, maxHeight) {
+  var out = { width: 0, height: 0, view: null, boxes: [] }
+  if (!entry || !Array.isArray(entry.windows) || entry.windows.length === 0 || !(width > 0)) return out
+  var m = entry.monitor
+  var view = null
+  if (m && m.width > 0 && m.height > 0) {
+    var r = Array.isArray(m.reserved) ? m.reserved : [0, 0, 0, 0]
+    view = { x: m.x + r[0], y: m.y + r[1], w: m.width - r[0] - r[2], h: m.height - r[1] - r[3] }
   }
-  var age = now - c.saved
-  if (age > AUTOSAVE_STALE) return { text: "Auto-save stopped  ·  last " + savedLabel(c.saved, now), stale: true }
-  return { text: "Auto-saved " + windowsLabel(c.windows) + "  ·  " + (age < 60 ? "just now" : savedLabel(c.saved, now)), stale: false }
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  function grow(x, y, w, h) {
+    minX = Math.min(minX, x); minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h)
+  }
+  if (view) grow(view.x, view.y, view.w, view.h)
+  var focus = Infinity
+  for (var i = 0; i < entry.windows.length; i++) {
+    var w = entry.windows[i]
+    if (!w.at || !w.size) continue
+    grow(w.at[0], w.at[1], w.size[0], w.size[1])
+    if (w.focus >= 0) focus = Math.min(focus, w.focus)
+  }
+  if (!(maxX > minX) || !(maxY > minY)) return out
+  var scale = width / (maxX - minX)
+  if (maxHeight > 0) scale = Math.min(scale, maxHeight / (maxY - minY))
+  function place(x, y, w, h) {
+    return { x: Math.round((x - minX) * scale), y: Math.round((y - minY) * scale), w: Math.max(2, Math.round(w * scale)), h: Math.max(2, Math.round(h * scale)) }
+  }
+  out.width = Math.round((maxX - minX) * scale)
+  out.height = Math.round((maxY - minY) * scale)
+  if (view) out.view = place(view.x, view.y, view.w, view.h)
+  for (var j = 0; j < entry.windows.length; j++) {
+    var win = entry.windows[j]
+    if (!win.at || !win.size) continue
+    var b = place(win.at[0], win.at[1], win.size[0], win.size[1])
+    b.address = win.address
+    b.name = win.name || ""
+    b.title = win.title || ""
+    b.kind = win.kind || "unknown"
+    b.floating = !!win.floating
+    b.focused = win.focus === focus
+    out.boxes.push(b)
+  }
+  // Floating windows draw over the tiled ones.
+  out.boxes.sort(function(a, b2) { return (a.floating ? 1 : 0) - (b2.floating ? 1 : 0) })
+  return out
+}
+
+// "scrolling" → "Scrolling".
+function layoutLabel(layout) {
+  var s = String(layout || "")
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : ""
+}
+
+// Short names for monitors, by connector: { "eDP-1": "Laptop", "DP-3": "Dell" }.
+// A built-in panel is the laptop's; an external one goes by its maker, or by
+// its model when two share a maker; the connector when it says nothing else.
+// `monitors` is [{ name, make, model }].
+function monitorLabels(monitors) {
+  var out = {}
+  var list = Array.isArray(monitors) ? monitors : []
+  var makers = {}
+  function maker(m) {
+    var word = String(m.make || "").trim().split(/\s+/)[0] || ""
+    // "DELL" → "Dell", but "LG" and "AOC" stay as they are.
+    if (word.length <= 3) return word.toUpperCase()
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+  }
+  for (var i = 0; i < list.length; i++) {
+    var k = maker(list[i])
+    if (k) makers[k] = (makers[k] || 0) + 1
+  }
+  for (var j = 0; j < list.length; j++) {
+    var m = list[j]
+    if (!m || !m.name) continue
+    var name = String(m.name)
+    var mk = maker(m)
+    if (/^(eDP|LVDS|DSI)-/.test(name)) out[name] = "Laptop"
+    else if (mk && makers[mk] === 1) out[name] = mk
+    else if (m.model) out[name] = String(m.model).trim()
+    else out[name] = name
+  }
+  return out
+}
+
+var LAPTOP_GLYPH = "\uf109"
+var MONITOR_GLYPH = "\uf108"
+
+// How a monitor shows in the panel: { "eDP-1": { icon, label, text } }. A
+// laptop's own screen and an external one each get their glyph; `text` adds
+// the short name only where two monitors would share a glyph.
+function monitorBadges(monitors) {
+  var labels = monitorLabels(monitors)
+  var out = {}
+  var count = {}
+  for (var name in labels) {
+    var icon = labels[name] === "Laptop" ? LAPTOP_GLYPH : MONITOR_GLYPH
+    out[name] = { icon: icon, label: labels[name] }
+    count[icon] = (count[icon] || 0) + 1
+  }
+  for (var n in out) out[n].text = count[out[n].icon] > 1 ? out[n].icon + " " + out[n].label : out[n].icon
+  return out
 }
 
 if (typeof module !== "undefined") {
   module.exports = {
     WORKSPACE_IDS: WORKSPACE_IDS,
+    SLOTS: SLOTS,
+    blockOf: blockOf,
+    slotOf: slotOf,
+    blockIds: blockIds,
+    parseBlocks: parseBlocks,
+    panelIds: panelIds,
+    parseScreens: parseScreens,
+    screenTabs: screenTabs,
+    nextTab: nextTab,
+    tabFor: tabFor,
+    pairedIds: pairedIds,
+    parseRenumber: parseRenumber,
+    renumbered: renumbered,
+    defaultLabel: defaultLabel,
     DEFAULT_LABELS: DEFAULT_LABELS,
     PALETTE: PALETTE,
     keyLabel: keyLabel,
@@ -359,6 +622,10 @@ if (typeof module !== "undefined") {
     restoreFor: restoreFor,
     restoreSummary: restoreSummary,
     savedLabel: savedLabel,
-    autosaveStatus: autosaveStatus
+    liveFor: liveFor,
+    layoutBoxes: layoutBoxes,
+    layoutLabel: layoutLabel,
+    monitorLabels: monitorLabels,
+    monitorBadges: monitorBadges
   }
 }

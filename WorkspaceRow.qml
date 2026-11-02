@@ -17,11 +17,14 @@ CursorSurface {
 
   readonly property var projectspace: Model.projectspaceFor(panel.spaces, wsId)
   readonly property string labelSource: Model.labelSource(wsId, panel.names, panel.spaces)
-  readonly property bool active: panel.monitorActiveId === wsId
+  // Shown on its screen now; the panel may be showing another screen's tab.
+  readonly property bool active: panel.viewActiveId === wsId
   readonly property int windows: panel.windowCount(wsId)
-  // Windows the last session had here that are not open now.
-  readonly property var restore: Model.restoreFor(panel.lastSession, wsId)
+  // Saved windows of this workspace that are not open now.
+  readonly property var restore: Model.restoreFor(panel.windowsInfo, wsId)
   readonly property int reopen: restore ? restore.missing : 0
+  // The same project's workspaces on other screens.
+  readonly property var paired: Model.pairedIds(panel.spaces, wsId)
   readonly property bool editing: panel.editingId === wsId
   readonly property bool picked: panel.cursorId === wsId
   readonly property color fg: panel.fg
@@ -118,6 +121,14 @@ CursorSurface {
 
         property bool cancelled: false
 
+        // Saves once, however the edit ends: Enter, or focus leaving the
+        // field (a click elsewhere in the panel takes it, see PanelContent).
+        function commit() {
+          if (!row.editing || cancelled) return
+          row.panel.setName(row.wsId, text)
+          row.panel.endRename()
+        }
+
         onVisibleChanged: {
           if (!visible) return
           cancelled = false
@@ -130,11 +141,19 @@ CursorSurface {
           row.panel.endRename()
           event.accepted = true
         }
-        onEditingFinished: {
-          if (!row.editing || cancelled) return
-          row.panel.setName(row.wsId, text)
-          row.panel.endRename()
+        // TextInput lets Return go on to its parents once it has finished
+        // editing, and by then the panel's keys are live again: it would take
+        // it for "go" and close. Taken here, it only saves.
+        Keys.onReturnPressed: function(event) {
+          commit()
+          event.accepted = true
         }
+        Keys.onEnterPressed: function(event) {
+          commit()
+          event.accepted = true
+        }
+        onEditingFinished: commit()
+        onActiveFocusChanged: if (!activeFocus) commit()
       }
     }
 
@@ -158,6 +177,29 @@ CursorSurface {
       color: row.dim
       font.family: row.panel.fontFamily
       font.pixelSize: Style.font.caption
+    }
+
+    // Linked to the project's workspaces on other screens; a click shows the
+    // first in its screen's tab. Laid out with more than one screen, so the
+    // counts line up.
+    Item {
+      visible: row.panel.screenTabs.length > 1 && !row.editing
+      Layout.preferredWidth: Style.space(22)
+      Layout.preferredHeight: Style.space(22)
+
+      PanelActionButton {
+        visible: row.paired.length > 0
+        anchors.centerIn: parent
+        iconText: "\uf0c1"
+        tooltipText: "Also on " + row.paired.map(function(id) {
+          return row.panel.screenOf(Model.blockOf(id)) + " " + Model.keyLabel(id)
+        }).join(", ")
+        foreground: row.fg
+        fontFamily: row.panel.fontFamily
+        fontSize: Style.font.bodySmall
+        size: Style.space(22)
+        onClicked: row.panel.showRow(row.paired[0])
+      }
     }
 
     Text {

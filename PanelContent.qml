@@ -1,13 +1,14 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Window
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
-// The panel's body: the ten workspaces on the left, the selected one's
-// projectspace and last-session windows on the right, settings and keys
-// below. Lives apart from BarWidget so a preview can render it without a
+// The panel's body: a tab per screen on top, the shown screen's ten workspaces
+// on the left, the selected one's projectspace, open and saved windows on the
+// right, settings and keys below. Lives apart from BarWidget so a preview can render it without a
 // KeyboardPanel (tests/preview).
 PanelKeyCatcher {
   id: keys
@@ -17,8 +18,8 @@ PanelKeyCatcher {
   anchors.fill: parent
   implicitHeight: body.implicitHeight
   // Two columns when the card has room; a narrow screen stacks them.
-  readonly property bool wide: width >= Style.space(620)
-  readonly property int sideWidth: wide ? Style.space(290) : width
+  readonly property bool wide: width >= Style.space(660)
+  readonly property int sideWidth: wide ? Style.space(330) : width
   readonly property int mainWidth: wide ? width - sideWidth - 2 * Style.spacing.panelGap - 1 : width
   readonly property color rule: Qt.rgba(panel.fg.r, panel.fg.g, panel.fg.b, 0.12)
   blocked: panel.editingAny
@@ -26,22 +27,39 @@ PanelKeyCatcher {
   onCloseRequested: panel.close()
   onTabRequested: function(direction) { panel.switchPanel(direction) }
   onMoveRequested: function(dx, dy) {
-    if (dy !== 0) panel.cursorId = Model.moveCursor(panel.cursorId, dy)
+    if (dy !== 0) panel.cursorId = Model.moveCursor(panel.cursorId, dy, panel.rowIds)
     else panel.cycleAttachment(panel.cursorId, dx)
   }
   onActivateRequested: panel.goTo(panel.cursorId)
   onDeleteRequested: panel.clearRow(panel.cursorId)
   onTextKey: function(text, modifiers) {
-    var ws = Model.workspaceForKey(text)
+    var ws = Model.workspaceForKey(text, panel.shownBlock)
     if (ws > 0) { panel.cursorId = ws; return }
+    if (text === "[" || text === "]") { panel.switchScreen(text === "]" ? 1 : -1); return }
     if (text === "O") { panel.restoreWindows(0); return }
     var key = text.toLowerCase()
     if (key === "o") panel.restoreWindows(panel.cursorId)
     else if (key === "e") panel.startRename(panel.cursorId)
     else if (key === "t") panel.openTerminal(panel.cursorId)
     else if (key === "c") panel.editConfig(panel.cursorId)
-    else if (key === "s") panel.saveNow()
+    else if (key === "s") panel.saveWindows(panel.cursorId)
     else if (key === "r") panel.refresh()
+  }
+
+  // A press anywhere else while a name is being edited takes focus from the
+  // field, which saves it, and goes on to whatever was pressed.
+  MouseArea {
+    anchors.fill: parent
+    z: 1
+    enabled: panel.editingAny
+    acceptedButtons: Qt.AllButtons
+    onPressed: function(mouse) {
+      // Inside the field itself, it is only placing the text cursor.
+      var field = keys.Window.activeFocusItem
+      var inField = field && field !== keys && field.contains(field.mapFromItem(keys, mouse.x, mouse.y))
+      if (!inField) keys.forceActiveFocus()
+      mouse.accepted = false
+    }
   }
 
   Column {
@@ -92,6 +110,24 @@ PanelKeyCatcher {
 
     PanelSeparator { foreground: panel.fg }
 
+    // ---- a tab per screen, with more than one
+    ButtonGroup {
+      visible: panel.screenTabs.length > 1
+      focusable: false
+      options: panel.screenTabs.map(function(t) {
+        return {
+          value: String(t.block), icon: t.icon,
+          label: t.plugged ? t.label : t.label + " (unplugged)",
+          tooltip: t.plugged ? "Workspaces on " + t.label + " ([ ])" : t.label + " is unplugged: its attachments and names wait for it"
+        }
+      })
+      value: String(panel.shownBlock)
+      foreground: panel.fg
+      fontFamily: panel.fontFamily
+      fontSize: Style.font.bodySmall
+      onChanged: function(value) { panel.showScreen(Number(value)) }
+    }
+
     GridLayout {
       width: parent.width
       columns: keys.wide ? 3 : 1
@@ -105,7 +141,7 @@ PanelKeyCatcher {
         spacing: Style.space(2)
 
           Repeater {
-            model: Model.WORKSPACE_IDS
+            model: panel.rowIds
 
             WorkspaceRow {
               required property int modelData
@@ -128,7 +164,7 @@ PanelKeyCatcher {
         foreground: panel.fg
       }
 
-      // ---- the selected workspace: its projectspace, its last-session windows
+      // ---- the selected workspace: its projectspace, what is open, what is saved
       Column {
         Layout.preferredWidth: keys.mainWidth
         Layout.alignment: Qt.AlignTop
@@ -144,10 +180,34 @@ PanelKeyCatcher {
           readonly property var envView: p ? Model.envRows(p.env, panel.home, 6) : ({ rows: [], hidden: 0 })
           readonly property string trustCommand: Model.trustCommand(p)
 
-          PanelSectionHeader {
-            text: "Workspace " + Model.keyLabel(panel.cursorId) + " projectspace"
-            foreground: panel.fg
-            fontFamily: panel.fontFamily
+          RowLayout {
+            width: parent.width
+            spacing: Style.spacing.md
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: (panel.screenTabs.length > 1 ? panel.screenOf(Model.blockOf(panel.cursorId)) + " " : "Workspace ")
+                + Model.keyLabel(panel.cursorId) + " projectspace"
+              foreground: panel.fg
+              fontFamily: panel.fontFamily
+            }
+
+            // Where it is, and how it tiles.
+            Text {
+              textFormat: Text.PlainText
+              text: {
+                var parts = []
+                // The header names its screen; this says where it is only when
+                // that is elsewhere, a guest of another monitor.
+                var m = panel.monitorFor(panel.cursorId)
+                if (m && panel.multiMonitor && m.label !== panel.screenOf(Model.blockOf(panel.cursorId))) parts.push(m.icon + "  " + m.label)
+                if (live.entry && live.entry.layout) parts.push(Model.layoutLabel(live.entry.layout))
+                return parts.join("  ·  ")
+              }
+              color: panel.dim
+              font.family: panel.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
           Flow {
@@ -166,6 +226,62 @@ PanelKeyCatcher {
                 foreground: panel.fg
                 fontFamily: panel.fontFamily
                 onClicked: panel.attach(panel.cursorId, modelData.home)
+              }
+            }
+          }
+
+          // A project on this screen only: the same slot on another screen is
+          // offered when free, else that screen's tab to pick one. Where it
+          // is on several already, the row's link icon says so.
+          Flow {
+            id: pairing
+            width: parent.width
+            spacing: Style.spacing.md
+            visible: offers.length > 0
+
+            readonly property var offers: {
+              if (!detail.p || Model.pairedIds(panel.spaces, panel.cursorId).length > 0) return []
+              var out = []
+              var here = Model.blockOf(panel.cursorId)
+              for (var i = 0; i < panel.screenTabs.length; i++) {
+                var tab = panel.screenTabs[i]
+                if (tab.block === here || !tab.plugged) continue
+                var same = tab.block * Model.SLOTS + Model.slotOf(panel.cursorId)
+                out.push({ block: tab.block, label: tab.label, id: Model.projectspaceFor(panel.spaces, same) ? -1 : same })
+              }
+              return out
+            }
+
+            Text {
+              height: Style.space(22)
+              verticalAlignment: Text.AlignVCenter
+              textFormat: Text.PlainText
+              text: "Only on this screen"
+              color: panel.dim
+              font.family: panel.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Repeater {
+              model: pairing.offers
+
+              Button {
+                required property var modelData
+                text: modelData.id > 0 ? "Attach on " + modelData.label + " " + Model.keyLabel(modelData.id) : "Pick a " + modelData.label + " workspace"
+                tooltipText: modelData.id > 0
+                  ? "Attach " + detail.p.name + " to " + modelData.label + "'s workspace " + Model.keyLabel(modelData.id) + " too, so both come up together"
+                  : modelData.label + "'s workspace " + Model.keyLabel(panel.cursorId) + " has a projectspace; pick another there"
+                iconText: modelData.id > 0 ? "+" : ""
+                foreground: panel.fg
+                fontFamily: panel.fontFamily
+                fontSize: Style.font.caption
+                bordered: true
+                horizontalPadding: Style.space(6)
+                verticalPadding: Style.space(2)
+                onClicked: {
+                  if (modelData.id > 0) panel.attach(modelData.id, detail.p.home)
+                  else panel.showScreen(modelData.block)
+                }
               }
             }
           }
@@ -314,19 +430,195 @@ PanelKeyCatcher {
           }
         }
 
-        // ---- the windows it had in the last session
-        PanelSeparator {
-          visible: session.visible
-          foreground: panel.fg
+        // ---- what is open on it now: where each window sits, then the list
+        PanelSeparator { foreground: panel.fg }
+
+        Column {
+          id: live
+          width: parent.width
+          spacing: Style.spacing.rowGap
+
+          readonly property var entry: Model.liveFor(panel.windowsInfo, panel.cursorId)
+          readonly property var drawing: Model.layoutBoxes(entry, width, Style.space(120))
+          readonly property int shown: 6
+
+          RowLayout {
+            width: parent.width
+            spacing: Style.spacing.md
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "Open now"
+              foreground: panel.fg
+              fontFamily: panel.fontFamily
+            }
+
+            Text {
+              visible: live.entry !== null
+              textFormat: Text.PlainText
+              text: Model.windowsLabel(live.entry ? live.entry.windows.length : 0)
+              color: panel.dim
+              font.family: panel.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: live.entry === null
+            textFormat: Text.PlainText
+            text: "No windows on workspace " + Model.keyLabel(panel.cursorId) + "."
+            color: panel.dim
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          // The layout in miniature: the screen's usable area as a frame, each
+          // window as a box, the last focused one brighter. A scrolling
+          // layout's off-screen columns sit outside the frame.
+          Item {
+            visible: live.entry !== null
+            width: live.drawing.width
+            height: live.drawing.height
+            anchors.horizontalCenter: parent.horizontalCenter
+
+            Rectangle {
+              visible: live.drawing.view !== null
+              x: live.drawing.view ? live.drawing.view.x : 0
+              y: live.drawing.view ? live.drawing.view.y : 0
+              width: live.drawing.view ? live.drawing.view.w : 0
+              height: live.drawing.view ? live.drawing.view.h : 0
+              color: Qt.rgba(panel.fg.r, panel.fg.g, panel.fg.b, 0.04)
+              border.width: 1
+              border.color: Qt.rgba(panel.fg.r, panel.fg.g, panel.fg.b, 0.35)
+              radius: 2
+            }
+
+            Repeater {
+              model: live.drawing.boxes
+
+              Rectangle {
+                required property var modelData
+                x: modelData.x + 2
+                y: modelData.y + 2
+                width: Math.max(2, modelData.w - 4)
+                height: Math.max(2, modelData.h - 4)
+                radius: 2
+                color: Qt.rgba(panel.fg.r, panel.fg.g, panel.fg.b, modelData.focused ? 0.22 : 0.1)
+                border.width: 1
+                border.color: Qt.rgba(panel.fg.r, panel.fg.g, panel.fg.b, modelData.focused ? 0.8 : 0.3)
+
+                Text {
+                  anchors.fill: parent
+                  anchors.margins: Style.space(3)
+                  visible: parent.width > Style.space(28) && parent.height > Style.space(14)
+                  textFormat: Text.PlainText
+                  text: modelData.name
+                  color: panel.fg
+                  opacity: modelData.focused ? 1 : 0.7
+                  elide: Text.ElideRight
+                  horizontalAlignment: Text.AlignHCenter
+                  verticalAlignment: Text.AlignVCenter
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: panel.focusWindow(modelData.address)
+                }
+              }
+            }
+          }
+
+          // Left to right as they sit; a click goes to the window.
+          Repeater {
+            model: live.entry ? live.entry.windows.slice(0, live.shown) : []
+
+            CursorSurface {
+              id: winRow
+              required property var modelData
+              width: live.width
+              implicitHeight: Style.space(22)
+              foreground: panel.fg
+              hasCursor: hover.containsMouse
+
+              MouseArea {
+                id: hover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: panel.focusWindow(winRow.modelData.address)
+              }
+
+              RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(4)
+                anchors.rightMargin: Style.space(4)
+                spacing: Style.space(8)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: winRow.modelData.kind === "terminal" ? "\uf120" : (winRow.modelData.kind === "browser" ? "\uf0ac" : "\uf2d0")
+                  color: panel.dim
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.caption
+                  Layout.preferredWidth: Style.space(12)
+                  horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: winRow.modelData.name
+                  color: panel.fg
+                  elide: Text.ElideMiddle
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  Layout.maximumWidth: Math.round(live.width * 0.45)
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  textFormat: Text.PlainText
+                  text: winRow.modelData.title !== winRow.modelData.name ? winRow.modelData.title : ""
+                  color: panel.dim
+                  elide: Text.ElideRight
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  visible: winRow.modelData.floating
+                  textFormat: Text.PlainText
+                  text: "floating"
+                  color: panel.dim
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: live.entry !== null && live.entry.windows.length > live.shown
+            textFormat: Text.PlainText
+            text: live.entry ? "+ " + (live.entry.windows.length - live.shown) + " more" : ""
+            color: panel.dim
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.caption
+          }
         }
+
+        // ---- the windows saved as its setup
+        PanelSeparator { foreground: panel.fg }
 
         Column {
           id: session
           width: parent.width
           spacing: Style.spacing.rowGap
-          visible: panel.lastSession.workspaces.length > 0
 
-          readonly property var entry: Model.restoreFor(panel.lastSession, panel.cursorId)
+          readonly property var entry: Model.restoreFor(panel.windowsInfo, panel.cursorId)
           readonly property int shown: 6
           readonly property bool busy: panel.restoringId >= 0
 
@@ -336,14 +628,15 @@ PanelKeyCatcher {
 
             PanelSectionHeader {
               Layout.fillWidth: true
-              text: "Last session"
+              text: "Saved windows"
               foreground: panel.fg
               fontFamily: panel.fontFamily
             }
 
             Text {
+              visible: session.entry !== null
               textFormat: Text.PlainText
-              text: "saved " + Model.savedLabel(panel.lastSession.saved, Math.round(panel.now))
+              text: session.entry ? "saved " + Model.savedLabel(session.entry.saved, Math.round(panel.now)) : ""
               color: panel.dim
               font.family: panel.fontFamily
               font.pixelSize: Style.font.caption
@@ -355,7 +648,7 @@ PanelKeyCatcher {
             visible: session.entry === null
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
-            text: "Nothing was open on workspace " + Model.keyLabel(panel.cursorId) + "."
+            text: "Nothing saved for workspace " + Model.keyLabel(panel.cursorId) + ". Open the windows it needs, then save: restore brings back whatever of them is missing."
             color: panel.dim
             font.family: panel.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -415,6 +708,7 @@ PanelKeyCatcher {
 
             Button {
               readonly property bool mine: panel.restoringId === panel.cursorId
+              visible: session.entry !== null
               enabled: !session.busy && session.entry !== null && session.entry.missing > 0
               opacity: enabled || mine ? 1 : 0.45
               text: mine ? "Restoring…" : (session.entry && session.entry.missing > 0 ? "Restore " + session.entry.missing : "All open")
@@ -432,13 +726,13 @@ PanelKeyCatcher {
 
             Button {
               readonly property bool mine: panel.restoringId === 0
-              visible: panel.lastSession.missing > (session.entry ? session.entry.missing : 0) || mine
+              visible: panel.windowsInfo.missing > (session.entry ? session.entry.missing : 0) || mine
               enabled: !session.busy
               opacity: enabled || mine ? 1 : 0.45
-              text: mine ? "Restoring all…" : "Restore all " + panel.lastSession.missing
+              text: mine ? "Restoring all…" : "Restore all " + panel.windowsInfo.missing
               iconText: ""
               iconSpinning: mine
-              tooltipText: "Reopen every missing window, each on its own workspace (O)"
+              tooltipText: "Reopen what is missing on every workspace with saved windows (O)"
               foreground: panel.fg
               fontFamily: panel.fontFamily
               fontSize: Style.font.bodySmall
@@ -447,6 +741,39 @@ PanelKeyCatcher {
               verticalPadding: Style.space(3)
               onClicked: panel.restoreWindows(0)
             }
+
+            // Saving replaces the workspace's setup with what is open on it now.
+            Button {
+              readonly property bool mine: panel.savingId === panel.cursorId
+              enabled: live.entry !== null && panel.savingId < 0
+              opacity: enabled || mine ? 1 : 0.45
+              text: mine ? "Saving…" : (session.entry ? "Save again" : "Save")
+              iconText: "\uf0c7"
+              iconSpinning: mine
+              tooltipText: "Save what is open on workspace " + Model.keyLabel(panel.cursorId) + " as its setup" + (session.entry ? ", replacing the saved one" : "") + " (s)"
+              foreground: panel.fg
+              fontFamily: panel.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              horizontalPadding: Style.space(8)
+              verticalPadding: Style.space(3)
+              onClicked: panel.saveWindows(panel.cursorId)
+            }
+
+            Button {
+              visible: session.entry !== null
+              enabled: panel.savingId < 0
+              text: "Forget"
+              iconText: "\uf1f8"
+              tooltipText: "Drop workspace " + Model.keyLabel(panel.cursorId) + "'s saved windows"
+              foreground: panel.fg
+              fontFamily: panel.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              horizontalPadding: Style.space(8)
+              verticalPadding: Style.space(3)
+              onClicked: panel.forgetWindows(panel.cursorId)
+            }
           }
         }
       }
@@ -454,106 +781,29 @@ PanelKeyCatcher {
 
     PanelSeparator { foreground: panel.fg }
 
-    // ---- settings: the strip's under the workspaces, the windows' on the right
-    GridLayout {
+    // ---- reopen the saved windows at login
+    Column {
       width: parent.width
-      columns: keys.wide ? 2 : 1
-      columnSpacing: 2 * Style.spacing.panelGap + 1
-      rowSpacing: Style.spacing.rowGap
+      spacing: Style.spacing.rowGap
 
       RowLayout {
-        Layout.preferredWidth: keys.sideWidth
-        Layout.alignment: Qt.AlignTop
+        width: parent.width
         spacing: Style.spacing.md
 
         Text {
           Layout.fillWidth: true
           textFormat: Text.PlainText
-          text: "Collapse strip after"
+          text: "Reopen saved windows at login"
+          color: panel.dim
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.bodySmall
           elide: Text.ElideRight
-          color: panel.dim
-          font.family: panel.fontFamily
-          font.pixelSize: Style.font.bodySmall
         }
 
-        NumberField {
+        ToggleSwitch {
+          checked: panel.restoreOnLogin
           foreground: panel.fg
-          fontFamily: panel.fontFamily
-          fontSize: Style.font.bodySmall
-          fieldWidth: Style.space(80)
-          value: panel.hoverOutDelayMs
-          from: 0
-          to: 5000
-          stepSize: 50
-          onModified: function(value) { panel.setHoverOutDelay(value) }
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          text: "ms"
-          color: panel.dim
-          font.family: panel.fontFamily
-          font.pixelSize: Style.font.bodySmall
-        }
-      }
-
-      Column {
-        Layout.preferredWidth: keys.mainWidth
-        spacing: Style.spacing.rowGap
-
-        RowLayout {
-          width: parent.width
-          spacing: Style.spacing.md
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: "Reopen the last session's windows at login"
-            color: panel.dim
-            font.family: panel.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideRight
-          }
-
-          ToggleSwitch {
-            checked: panel.restoreOnLogin
-            foreground: panel.fg
-            onToggled: panel.setRestoreOnLogin(!panel.restoreOnLogin)
-          }
-        }
-
-        // Auto-save runs every minute from Hyprland; this says it still does,
-        // and `s` saves right now (the minute before a reboot).
-        RowLayout {
-          readonly property var status: Model.autosaveStatus(panel.lastSession, panel.now)
-          width: parent.width
-          spacing: Style.spacing.md
-
-          Text {
-            id: autosave
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            text: parent.status.text
-            color: parent.status.stale ? (panel.bar ? panel.bar.urgent : Commons.Color.urgent) : panel.dim
-            font.family: panel.fontFamily
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          Button {
-            text: panel.saving ? "Saving…" : "Save now"
-            iconText: ""
-            iconSpinning: panel.saving
-            enabled: !panel.saving
-            tooltipText: "Snapshot the windows on workspaces 1–10 now (s)"
-            foreground: panel.fg
-            fontFamily: panel.fontFamily
-            fontSize: Style.font.bodySmall
-            bordered: true
-            horizontalPadding: Style.space(8)
-            verticalPadding: Style.space(3)
-            onClicked: panel.saveNow()
-          }
+          onToggled: panel.setRestoreOnLogin(!panel.restoreOnLogin)
         }
       }
     }
@@ -565,10 +815,10 @@ PanelKeyCatcher {
       spacing: Style.spacing.lg
 
       Repeater {
-        model: [
+        model: (panel.screenTabs.length > 1 ? [["[ ]", "screen"]] : []).concat([
           ["↑↓", "pick"], ["↵", "go"], ["←→", "projectspace"], ["e", "rename"],
           ["x", "clear"], ["t", "terminal"], ["c", "config"], ["o", "restore"], ["s", "save"]
-        ]
+        ])
 
         Row {
           required property var modelData

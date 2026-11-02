@@ -23,13 +23,18 @@ settings=$(jq -c '[.bar.layout[][] | select(.id == "mehiel.omaprojectspace")][0]
 PREVIEW_SCREEN=$screen PREVIEW_REPO=$here/plugin PREVIEW_CURSOR=${1:-7} PREVIEW_SETTINGS=$settings \
   quickshell -p "$here" >"$here/.log" 2>&1 &
 pid=$!
+# Whatever happens below, the overlay goes: a failed capture must not leave
+# it covering a screen.
+trap 'kill "$pid" 2>/dev/null || true' EXIT
 sleep "${PREVIEW_WAIT:-3}"
 geometry=$(hyprctl layers -j | jq -r --arg s "$screen" '.[$s].levels[]?[]? | select(.namespace == "omaprojectspace-preview") | "\(.x),\(.y) \(.w)x\(.h)"' | head -1)
 if [[ -n $geometry ]]; then
-  # Layer coordinates are monitor-local; grim wants layout coordinates.
-  read -r mx my < <(hyprctl monitors -j | jq -r --arg s "$screen" '.[] | select(.name == $s) | "\(.x) \(.y)"')
+  # Layer coordinates are layout coordinates already, as grim wants them.
+  read -r my mh < <(hyprctl monitors -j | jq -r --arg s "$screen" '.[] | select(.name == $s) | "\(.y) \(.height / .scale | floor)"')
   IFS=', x' read -r x y w h <<<"$geometry"
-  grim -g "$((mx + x)),$((my + y)) ${w}x${h}" "$out"
+  # A panel taller than the screen is captured down to the screen's edge.
+  ((y + h > my + mh)) && h=$((my + mh - y))
+  grim -g "$x,$y ${w}x${h}" "$out"
 else
   grim -o "$screen" "$out"
 fi

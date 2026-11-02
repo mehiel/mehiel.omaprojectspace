@@ -73,6 +73,30 @@ ahead of `/usr/bin` on the session PATH. For each launch, the shim:
 
 The shim adds about 20–35 ms per launch.
 
+### The Quake console
+
+Omarchy's Quake console (`SUPER + grave`, the `special:qconsole` workspace)
+seeds its agent from whatever workspace is underneath, and keeps that env.
+To give it a fixed one instead, add a `qconsole` key to `attachments.json`
+by hand:
+
+```json
+{
+  "version": 1,
+  "qconsole": "none",
+  "workspaces": { "9": "~/Projects/acme" }
+}
+```
+
+| `qconsole` | Launches while the console is open get |
+|---|---|
+| missing | the env of the workspace underneath (stock behaviour) |
+| `"none"` | no projectspace: your personal defaults (`~/.claude`, …) |
+| `"~/Projects/acme"` | that projectspace's env, always |
+
+It applies to launches made while the console is open, so close the console
+agent once for a change to take effect.
+
 The shim never blocks a launch. If the config is untrusted or broken, the folder
 is gone, or any other error occurs, the app still starts, without the
 projectspace env, and you get a notification.
@@ -111,6 +135,8 @@ On the strip:
   unless you gave it a name of your own.
 - Hovering a workspace shows a tooltip with its folder and window count.
 - Click a workspace to go there. Right-click it to open the panel on that row.
+- The strip collapses 120 ms after the pointer leaves. To change that, set
+  `"hoverOutDelayMs"` on the widget's entry in `~/.config/omarchy/shell.json`.
 
 The panel opens from the gear, a right-click, or **Super+Alt+P**. It appears on
 the monitor you're on.
@@ -124,24 +150,57 @@ the monitor you're on.
 | x | clear: the projectspace first, then the custom name |
 | t | open a terminal in its projectspace, with its env |
 | c | edit its projectspace's mise config |
-| o / O | restore the last session's windows on it / on every workspace |
-| s | save the windows now |
+| o / O | restore its saved windows / every saved workspace's |
+| s | save its windows as its setup |
 | r | refresh |
+| [ / ] | the previous / next screen's tab |
 
-The workspaces are on the left. On the right, the selected one's details:
+With more than one monitor, a tab per screen sits on top (Laptop, Dell…),
+and the panel opens on the screen it was opened from. Any screen's workspaces
+can be named, attached, saved and restored from any other. A screen that is
+unplugged keeps a tab, marked so, while anything in it is attached or named.
+The workspaces of the shown screen are on the left. A link icon marks one
+whose project is on another screen too; hover it to see where, click it to go
+to that screen's tab.
+
+Omarchy gives every monitor workspaces 1–10 of its own: the laptop panel has
+ids 1–10, the next monitor 11–20, and so on. The strip and the panel show the
+monitor's own ten, numbered 1–0 as the keys are, followed by any workspace
+visiting from an unplugged monitor. Attachments, saved windows and names are
+kept by id, and when Omarchy renumbers a workspace (moved to another monitor
+with Super+Shift+Alt+arrow, or sent elsewhere by an unplug) they follow it to
+its new id.
+
+A project can be attached on more than one monitor, say its editors on the
+laptop and its chat or browser on the external one. Going to one of its
+workspaces, by key, bar or panel, brings up its workspace on each other
+monitor too, and keeps focus where you went. A monitor with none of the
+project's workspaces, or one already showing one of them, is left alone, and
+moving focus between monitors switches nothing. Super+Shift+Ctrl+arrow then
+moves a window to the project's workspace on the other screen.
+
+On the right, the selected one's details:
 - chips to attach a projectspace;
+- for a project on one screen only, **Attach on Dell 8** for the same slot
+  on the other, or a way to pick one there when that slot is taken;
 - what its mise config sets beyond your global config;
 - a **Trust** button when mise refuses an untrusted config;
-- the windows it had in your last session, with a **Restore** button.
+- what is open on it now: its layout drawn in miniature (a scrolling
+  layout's off-screen columns included) and its windows. Click one to go
+  there;
+- its saved windows, which of them are open, and **Restore**, **Save again**
+  and **Forget**.
 
-At the bottom: a switch that reopens the last session's windows at login, and
-whether auto-save is running, with **Save now**. On a narrow screen the two
-columns stack.
+At the bottom, a switch reopens every saved workspace's windows at login. On
+a narrow screen the two columns stack.
 
 ## Restoring windows
 
-Hyprland doesn't bring windows back after a logout or reboot. Projectspaces
-saves, every minute, what it takes to reopen each window on workspaces 1–10:
+Hyprland doesn't bring windows back after a logout or reboot. Set a
+workspace up with the windows it needs, then save it: **s** in the panel, or
+`omaprojectspace save --ws N`. Saving is on demand only, so a workspace's save
+is the setup you chose, not whatever happened to be open. It records what it
+takes to reopen each window:
 
 - **a terminal:** its folder, and the session it runs when that's herdr, tmux
   or zellij. The session's server keeps the panes, so reattaching brings them
@@ -151,28 +210,33 @@ saves, every minute, what it takes to reopen each window on workspaces 1–10:
 - **an app or a web app:** its desktop entry. A Chrome web app is matched by
   its URL and profile.
 
-At the next login, that snapshot becomes the *last session*. `omaprojectspace
-restore`, the panel's **o**, or the login switch reopens what is missing. Each
+Saving again replaces the workspace's setup; **Forget** drops it. The saves
+live in `~/.config/omaprojectspace/windows.json`.
+
+`omaprojectspace restore`, the panel's **o** (this workspace) or **O** (every
+saved one), or the login switch reopens what is missing from the setup. Each
 window opens on its own workspace, without taking focus, through the shim, so
 it gets that workspace's projectspace env. Windows that are open again
 already, and apps open on another workspace, are left alone, so restoring
 twice is safe.
 
 Not restored: where windows sat in the layout, what ran in a plain shell, and
-windows without a desktop entry (`omaprojectspace save` lists them).
+windows without a desktop entry (`omaprojectspace save` names them).
 
 ## CLI
 
 ```
 omaprojectspace list [--json]                 projectspaces and their workspaces
-omaprojectspace attach <ws> <name|path>       attach workspace 1–10
+omaprojectspace attach <ws> <name|path>       attach workspace <ws> (11–20 on a second monitor)
 omaprojectspace detach <ws>
+omaprojectspace renumber <from>:<to>...       carry attachments, saved windows and names to new ids
 omaprojectspace status [--ws N] [--json]      the active (or given) workspace's projectspace
 omaprojectspace env [--ws N | --name P]       the env a launch there gets
 omaprojectspace exec [--ws N | --name P] -- cmd
 omaprojectspace browser [url]                 the projectspace's $BROWSER, else the default
-omaprojectspace save                          snapshot the windows now (Hyprland does it every minute)
-omaprojectspace windows [--json]              the last session's windows, which are missing, and this session's snapshot
+omaprojectspace save [--ws N]                 save the workspace's windows as its setup
+omaprojectspace forget [--ws N]               drop its saved windows
+omaprojectspace windows [--json]              saved windows and which are missing; --json adds what is open now
 omaprojectspace restore [--ws N] [--dry-run]  reopen the missing ones, each on its workspace
 omaprojectspace doctor                        check links, session PATH, every projectspace
 ```
