@@ -267,6 +267,12 @@ workspace 1: Acme  ~/Projects/acme
         <p>A new terminal starts in the team folder. One opened from another terminal keeps that terminal's folder.</p></div>
       <div class="card feature"><div class="icon">↺</div><h3>Windows come back</h3>
         <p>Set a workspace up and save it with <kbd>s</kbd>. After a reboot, <kbd>o</kbd> in the panel, or a switch at login, reopens its terminals, herdr or tmux sessions, browser and web apps, with their team's env.</p></div>
+      <div class="card feature"><div class="icon">▣</div><h3>Every monitor, its own ten</h3>
+        <p>Each screen keeps Omarchy's block of workspaces (laptop 1–10, the next monitor 11–20). The panel has a tab per screen, so one screen can set up another's. When Omarchy moves a workspace to another monitor, its team, name and saved windows go with it.</p></div>
+      <div class="card feature"><div class="icon">⇆</div><h3>A project across screens</h3>
+        <p>Attach a team on more than one monitor, say editors on one and chat on the other. Switch to one of its workspaces and the others come up on their own screens. Anything else on those screens stays put.</p></div>
+      <div class="card feature"><div class="icon">~</div><h3>The Quake console, your way</h3>
+        <p>By default <kbd>Super</kbd> <kbd>`</kbd> takes the env of the workspace underneath. To always give it one team's env, or none, set a <code>qconsole</code> key in <code>attachments.json</code>.</p></div>
       <div class="card feature"><div class="icon">✓</div><h3>Fails open</h3>
         <p>Untrusted config, missing folder, any error: the app still launches, plainly, with a notification. <code>omaprojectspace doctor</code> checks it all.</p></div>
     </div>
@@ -307,6 +313,7 @@ workspace 1: Acme  ~/Projects/acme
         <table>
           <tr><td><kbd>↑</kbd> <kbd>↓</kbd> · <kbd>1</kbd>–<kbd>0</kbd></td><td>pick a workspace</td></tr>
           <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>cycle its projectspace</td></tr>
+          <tr><td><kbd>[</kbd> · <kbd>]</kbd></td><td>previous · next screen's tab</td></tr>
           <tr><td><kbd>Enter</kbd></td><td>go there</td></tr>
           <tr><td><kbd>e</kbd></td><td>rename</td></tr>
           <tr><td><kbd>x</kbd></td><td>clear the projectspace, then the name</td></tr>
