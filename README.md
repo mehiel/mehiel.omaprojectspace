@@ -135,6 +135,18 @@ On the strip:
   unless you gave it a name of your own.
 - Hovering a workspace shows a tooltip with its folder and window count.
 - Click a workspace to go there. Right-click it to open the panel on that row.
+- Beside the active workspace, a **minimap** draws its windows as boxes, in
+  the scrolling layout's column order and at their windows' proportions. The
+  focused one is in the accent color, the others on screen in a softer
+  tone of it, and ones scrolled off screen faintest,
+  stacked windows split their column, and a tabbed group gets a tab bar. An
+  urgent window turns amber until you focus it. Hover a box and a tab pops out of the bar with its icon, its app's name as the
+  panel lists it, and its title. Click a box to focus it, or scroll over the
+  minimap to step focus through the windows in order. Turn it off in the widget's settings or with the switch at the
+  bottom of the panel. The settings also cap its width (past it, it scrolls),
+  add floating windows, and reduce motion, or have the tab also pop up for a
+  moment whenever focus moves. The design follows jgarza's
+  [Minimap](https://github.com/jgarza9788/minimap) plugin.
 - The strip collapses 120 ms after the pointer leaves. To change that, set
   `"hoverOutDelayMs"` on the widget's entry in `~/.config/omarchy/shell.json`.
 

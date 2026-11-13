@@ -175,3 +175,16 @@ hl.on("workspace.active", function()
 end)
 
 remember()
+
+-- The minimap's name tab is a popup of the bar. With the glassy bar on
+-- (Omarchy's bar-glassy toggle, which also sets ignore_alpha), blur behind it
+-- too, so it looks like part of the bar. Omarchy reloads Hyprland whenever
+-- the toggle changes, so this check runs again then.
+do
+  local state = os.getenv("XDG_STATE_HOME") or ((os.getenv("HOME") or "") .. "/.local/state")
+  local glassy = io.open(state .. "/omarchy/toggles/hypr/bar-glassy.lua", "r")
+  if glassy then
+    glassy:close()
+    hl.layer_rule({ match = { namespace = "^omarchy-bar$" }, blur_popups = true })
+  end
+end

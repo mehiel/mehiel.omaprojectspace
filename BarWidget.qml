@@ -29,6 +29,24 @@ Panel {
   // only ("hoverOutDelayMs" on this widget's entry).
   readonly property int hoverOutDelayMs: Math.max(0, Number(root.setting("hoverOutDelayMs", 120)))
   readonly property bool restoreOnLogin: root.setting("restoreOnLogin", false) === true
+  // The minimap beside the active workspace (Minimap.qml): on unless turned
+  // off in the widget's settings or the panel.
+  readonly property bool minimap: root.setting("minimap", true) !== false
+  readonly property int minimapMaxWidth: Math.max(60, Number(root.setting("minimapMaxWidth", 480)) || 480)
+  readonly property bool minimapFloating: root.setting("minimapFloating", false) === true
+  readonly property bool minimapReduceMotion: root.setting("minimapReduceMotion", false) === true
+  readonly property bool minimapFocusTab: root.setting("minimapFocusTab", false) === true
+  // What the panel calls each window open on the active workspace, for the
+  // minimap's hover tab.
+  readonly property var minimapNames: {
+    var entry = Model.liveFor(root.windowsInfo, root.monitorActiveId)
+    var out = {}
+    if (entry) for (var i = 0; i < entry.windows.length; i++) {
+      var w = entry.windows[i]
+      if (w && w.address) out[String(w.address).toLowerCase()] = { name: w.name || "", kind: w.kind || "" }
+    }
+    return out
+  }
 
   // updateEntryInline replaces the whole entry, so every write resends the
   // current settings in full. type/source are leftovers of the bar/modules
@@ -54,6 +72,10 @@ Panel {
 
   function setRestoreOnLogin(on) {
     root.persistSettings({ restoreOnLogin: !!on })
+  }
+
+  function setMinimap(on) {
+    root.persistSettings({ minimap: !!on })
   }
 
   // `omaprojectspace renumber` moves attachments and saved windows; names are
@@ -362,7 +384,10 @@ Panel {
   // events reads once.
   Connections {
     target: Hyprland
-    enabled: root.opened
+    // The minimap's hover tab names windows from the same read, so it stays
+    // current while the minimap shows; read before a hover, the name is there
+    // when the tab drops instead of arriving after it.
+    enabled: root.opened || root.minimap
     function onRawEvent(event) {
       var n = event.name
       if (n === "openwindow" || n === "closewindow" || n === "movewindow" || n === "movewindowv2"
@@ -669,6 +694,33 @@ Panel {
       workspaceId: root.primaryId
     }
 
+    // Takes no space while off or empty, so the strip is as it was.
+    Item {
+      visible: root.minimap
+      width: minimapH.implicitWidth > 0 ? minimapH.implicitWidth + Style.space(8) : 0
+      height: stripRow.height
+
+      Minimap {
+        id: minimapH
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.minimap && !root.vertical
+        bar: root.bar
+        monitor: root.hyprMonitor
+        workspaceId: root.monitorActiveId
+        barSize: root.barSize
+        fg: root.fg
+        fontFamily: root.fontFamily
+        maxLength: root.minimapMaxWidth
+        showFloating: root.minimapFloating
+        reduceMotion: root.minimapReduceMotion
+        suppressLabel: root.opened
+        appNames: root.minimapNames
+        peekOnFocus: root.minimapFocusTab
+        onNamesWanted: root.refreshWindows()
+      }
+    }
+
     // Collapses to zero width instead of hiding, so the labels inside keep
     // their layout and are simply clipped away while the module is idle.
     Item {
@@ -729,6 +781,33 @@ Panel {
       visible: root.primaryId > 0
       anchors.horizontalCenter: parent.horizontalCenter
       workspaceId: root.primaryId
+    }
+
+    Item {
+      visible: root.minimap
+      width: stripColumn.width
+      height: minimapV.implicitHeight > 0 ? minimapV.implicitHeight + Style.space(8) : 0
+
+      Minimap {
+        id: minimapV
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        visible: root.minimap && root.vertical
+        vertical: true
+        bar: root.bar
+        monitor: root.hyprMonitor
+        workspaceId: root.monitorActiveId
+        barSize: root.barSize
+        fg: root.fg
+        fontFamily: root.fontFamily
+        maxLength: root.minimapMaxWidth
+        showFloating: root.minimapFloating
+        reduceMotion: root.minimapReduceMotion
+        suppressLabel: root.opened
+        appNames: root.minimapNames
+        peekOnFocus: root.minimapFocusTab
+        onNamesWanted: root.refreshWindows()
+      }
     }
 
     Item {

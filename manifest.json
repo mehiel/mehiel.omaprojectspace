@@ -2,11 +2,13 @@
   "schemaVersion": 1,
   "id": "mehiel.omaprojectspace",
   "name": "Projectspaces",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "mehiel",
   "license": "MIT",
-  "description": "Give every workspace a team: anything launched there starts in the team folder, with its mise env and browser profile. Per-monitor workspaces, saved windows, named workspaces in the bar.",
-  "kinds": ["bar-widget"],
+  "description": "Give every workspace a team: anything launched there starts in the team folder, with its mise env and browser profile. Per-monitor workspaces, saved windows, named workspaces in the bar, with a minimap of the active one's windows.",
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
@@ -14,8 +16,59 @@
     "displayName": "Projectspaces",
     "description": "This monitor's workspaces, named and tagged with their projectspace.",
     "category": "Compositor",
-    "aliases": ["workspaces", "projects", "projectspace"],
+    "aliases": [
+      "workspaces",
+      "projects",
+      "projectspace"
+    ],
     "allowMultiple": false,
-    "defaultSection": "left"
+    "defaultSection": "left",
+    "defaults": {
+      "minimap": true,
+      "minimapMaxWidth": 480,
+      "minimapFloating": false,
+      "minimapReduceMotion": false,
+      "minimapFocusTab": false
+    },
+    "schema": [
+      {
+        "key": "minimap",
+        "type": "boolean",
+        "label": "Minimap",
+        "description": "Beside the active workspace, a box per window in layout order: the focused one in the accent color, ones scrolled off screen dimmed. Click a box to focus its window; hover it for its title.",
+        "defaultValue": true
+      },
+      {
+        "key": "minimapMaxWidth",
+        "type": "integer",
+        "label": "Minimap maximum width",
+        "description": "Longest the minimap may get, in logical pixels. Past it, it scrolls with the focused window and glows at the edge that hides more.",
+        "min": 60,
+        "max": 2000,
+        "step": 10,
+        "defaultValue": 480
+      },
+      {
+        "key": "minimapFocusTab",
+        "type": "boolean",
+        "label": "Minimap: name on focus change",
+        "description": "Besides on hover, pop the window's name tab up for a moment whenever focus moves to a window on this workspace.",
+        "defaultValue": false
+      },
+      {
+        "key": "minimapFloating",
+        "type": "boolean",
+        "label": "Minimap: floating windows",
+        "description": "Include floating windows in the minimap.",
+        "defaultValue": false
+      },
+      {
+        "key": "minimapReduceMotion",
+        "type": "boolean",
+        "label": "Minimap: reduce motion",
+        "description": "No bounce or swell, and alerts glow steadily instead of pulsing.",
+        "defaultValue": false
+      }
+    ]
   }
 }

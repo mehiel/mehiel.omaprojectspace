@@ -781,7 +781,7 @@ PanelKeyCatcher {
 
     PanelSeparator { foreground: panel.fg }
 
-    // ---- reopen the saved windows at login
+    // ---- reopen the saved windows at login; the bar's minimap
     Column {
       width: parent.width
       spacing: Style.spacing.rowGap
@@ -804,6 +804,27 @@ PanelKeyCatcher {
           checked: panel.restoreOnLogin
           foreground: panel.fg
           onToggled: panel.setRestoreOnLogin(!panel.restoreOnLogin)
+        }
+      }
+
+      RowLayout {
+        width: parent.width
+        spacing: Style.spacing.md
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: "Minimap of the active workspace's windows in the bar"
+          color: panel.dim
+          font.family: panel.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+
+        ToggleSwitch {
+          checked: panel.minimap
+          foreground: panel.fg
+          onToggled: panel.setMinimap(!panel.minimap)
         }
       }
     }
